@@ -1,0 +1,100 @@
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <AppDesignerFolder>Properties</AppDesignerFolder>
+    <RootNamespace>Bonoos.iikoFront.LoyaltyPlugin</RootNamespace>
+    <AssemblyName>Bonoos.iikoFront.LoyaltyPlugin</AssemblyName>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+
+  <!--
+    ============================================================
+    iikoFront Plugin SDK references
+    ============================================================
+    Place the SDK DLLs from the iikoFront VM install into an iikoFrontSDK\
+    folder at the repo root:
+      iikoFrontSDK\Resto.Front.Api.dll   (RMS 9: all API types merged into this one DLL)
+      iikoFrontSDK\Newtonsoft.Json.dll   (ships with iikoFront)
+
+    Or update HintPath to match the actual paths on your VM machine.
+
+    ⚠️ Set Copy Local = False so SDK DLLs are NOT redistributed.
+    ============================================================
+  -->
+  <!--
+    All iiko SDK types (including the Data / UI / Devices / Security / Exceptions
+    namespaces) live in a single merged Resto.Front.Api.dll in RMS 9 — one
+    reference is enough. Copy that DLL from the iikoFront install into
+    iikoFrontSDK\ (or repoint the HintPath at the install folder).
+  -->
+  <ItemGroup>
+    <Reference Include="Resto.Front.Api">
+      <HintPath>iikoFrontSDK\Resto.Front.Api.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!--
+    Newtonsoft.Json: reference the copy that ships with iikoFront (same folder as
+    Resto.Front.Api.dll). Private=False so we don't ship our own copy — iikoFront
+    already has Newtonsoft loaded in-process, and a second copy risks a binding
+    conflict. Copy Newtonsoft.Json.dll into iikoFrontSDK\ alongside the API DLL.
+  -->
+  <ItemGroup>
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>iikoFrontSDK\Newtonsoft.Json.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="System" />
+    <Reference Include="System.Net.Http" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Xml" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="Models\BonoosApiModels.cs" />
+    <Compile Include="Models\PluginConfiguration.cs" />
+    <Compile Include="Services\BonoosApiClient.cs" />
+    <Compile Include="Services\BonoosPaymentProcessor.cs" />
+    <Compile Include="Services\ConfigLoader.cs" />
+    <Compile Include="Services\OrderTracker.cs" />
+    <Compile Include="Plugin.cs" />
+    <Compile Include="Properties\AssemblyInfo.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="plugin.config">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <!-- Sample config: copied to the output dir only if the operator hasn't
+         already placed a real one there (PreserveNewest won't clobber edits). -->
+    <None Include="Bonoos.LoyaltyPlugin.config.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>

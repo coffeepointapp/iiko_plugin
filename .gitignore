@@ -1,0 +1,26 @@
+## SDK reference DLLs (proprietary, machine-specific)
+iikoFrontSDK/
+
+## Build output
+bin/
+obj/
+
+## Visual Studio user files
+*.user
+*.suo
+*.sln.docstates
+
+## NuGet packages
+packages/
+*.nupkg
+
+## ReSharper
+*.ReSharper
+_ReSharper.*/
+
+## Visual Studio / Rider working dirs
+.vs/
+.idea/
+
+## macOS
+.DS_Store

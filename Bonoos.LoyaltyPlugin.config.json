@@ -1,0 +1,8 @@
+{
+  "_comment": "Bonoos loyalty plugin config. Fill in per terminal, then deploy next to the DLL (or to %PROGRAMDATA%\\Bonoos\\iikoFront\\config.json). Do NOT commit a real serviceAccountToken.",
+
+  "baseUrl": "https://pos.bonoos.ru/iiko/",
+  "tenantId": "",
+  "serviceAccountToken": "",
+  "timeoutSeconds": 25
+}
