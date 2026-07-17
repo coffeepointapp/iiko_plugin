@@ -1,39 +1,38 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Threading.Tasks;
 using Bonoos.iikoFront.LoyaltyPlugin.Models;
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  SDK SEAM FILE #2 (the other is Plugin.cs).
+//  SDK SEAM FILE #2. Implements iiko's external payment system so "Bonoos" shows
+//  in iikoOffice under  Внешний тип оплаты → Безналичный тип.
 //
-//  Implements iiko's external payment system so "Bonoos" appears in iikoOffice
-//  under  Внешний тип оплаты → Безналичный тип.  iikoFront then calls these
-//  methods at the payment lifecycle points, and we forward to the SDK-free
-//  OrderTracker → Bonoos API:
-//
+//  Method signatures below are the REAL Resto.Front.Api V9 IExternalPaymentProcessor
+//  contract (from the SDK's ExternalPaymentProcessorSample). iikoFront calls:
 //      Pay()                    → /order/pay-by-bonus/     (reserve / spend)
-//      EmergencyCancelPayment() → /order/pay-by-bonus/cancel/  (unclosed order)
-//      ReturnPayment()          → refund  (Phase 1.5 — not on backend yet)
-//
-//  ⚠ The IExternalPaymentProcessor signatures below follow the published v6
-//    contract. iiko RMS 9 (Resto.Front.Api V9) may differ — VERIFY every
-//    method signature, type, and namespace against the SDK on the VM. The
-//    business logic (what we call on OrderTracker) does not change even if the
-//    signatures do; keep the RunSync(...) delegations and re-shape the params.
+//      EmergencyCancelPayment() → /order/pay-by-bonus/cancel/
+//      ReturnPayment()          → refund (Phase 1.5 — not on backend yet)
+//  Business logic lives in the SDK-free OrderTracker; we only translate here.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ⚠ SEAM — SDK namespaces. Adjust to your V9 build.
 using Resto.Front.Api;
+using Resto.Front.Api.Data.Cheques;
 using Resto.Front.Api.Data.Orders;
+using Resto.Front.Api.Data.Organization;
+using Resto.Front.Api.Data.Payments;
 using Resto.Front.Api.Data.Security;
-using Resto.Front.Api.Devices;
-using Resto.Front.Api.UI;
+using Resto.Front.Api.Data.View;
 using Resto.Front.Api.Exceptions;
+using Resto.Front.Api.Extensions;
+using Resto.Front.Api.UI;
 
 namespace Bonoos.iikoFront.LoyaltyPlugin.Services
 {
-    public class BonoosPaymentProcessor : IExternalPaymentProcessor
+    // Plugins are marshaled across the API boundary, so the processor is a
+    // MarshalByRefObject (matches the SDK sample).
+    public sealed class BonoosPaymentProcessor : MarshalByRefObject, IExternalPaymentProcessor, IDisposable
     {
         private readonly OrderTracker _tracker;
         private readonly Action<string> _log;
@@ -44,28 +43,24 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
             _log = log ?? (_ => { });
         }
 
-        // Stable key (never shown) + display name (shown in iikoOffice "Безналичный тип").
         public string PaymentSystemKey => "bonoos-loyalty";
         public string PaymentSystemName => "Bonoos";
 
         // ───────────────────────── DEBIT: reserve/spend bonus ─────────────────────────
-
-        public void Pay(decimal sum, Guid? orderId, Guid paymentTypeId, Guid transactionId,
-            IPointOfSale pointOfSale, IUser cashier, IReceiptPrinter printer,
-            IViewManager viewManager, IPaymentDataContext context, IProgressBar progressBar)
+        // NOTE V9: Pay receives the full IOrder (not just an id) and IOperationService.
+        public void Pay(decimal sum, IOrder order, Guid paymentTypeId, Guid transactionId,
+            IPointOfSale pointOfSale, IUser cashier, IOperationService operations,
+            IReceiptPrinter printer, IViewManager viewManager, IPaymentDataContext context)
         {
-            var oid = orderId?.ToString();
-            if (string.IsNullOrEmpty(oid))
+            if (order == null)
                 throw new PaymentActionFailedException("Оплата бонусами доступна только внутри заказа.");
 
+            var oid = order.Id.ToString();
             if (!_tracker.TryGetOrder(oid, out var state) || state.Card == null)
                 throw new PaymentActionFailedException("Сначала отсканируйте карту клиента.");
 
             var ok = RunSync(_tracker.PayByBonusAsync(
-                oid, state.OrderNumber,
-                state.LastItems ?? new List<OrderItemDto>(),
-                state.Card,
-                Rub(sum)));
+                oid, order.Number.ToString(), MapItems(order), state.Card, Rub(sum)));
 
             if (!ok)
                 throw new PaymentActionFailedException("Не удалось списать бонусы.");
@@ -75,77 +70,78 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
         }
 
         // ───────────────────────── CANCEL / REFUND ─────────────────────────
-
-        // Unclosed order — cashier removed the payment / fiscal issue. Release the reservation.
         public void EmergencyCancelPayment(decimal sum, Guid? orderId, Guid paymentTypeId,
             Guid transactionId, IPointOfSale pointOfSale, IUser cashier, IReceiptPrinter printer,
-            IViewManager viewManager, IPaymentDataContext context, IProgressBar progressBar)
-        {
-            CancelReservation(orderId);
-        }
+            IViewManager viewManager, IPaymentDataContext context)
+            => CancelReservation(orderId);
 
         public void EmergencyCancelPaymentSilently(decimal sum, Guid? orderId, Guid paymentTypeId,
             Guid transactionId, IPointOfSale pointOfSale, IUser cashier, IReceiptPrinter printer,
             IPaymentDataContext context)
-        {
-            CancelReservation(orderId);
-        }
+            => CancelReservation(orderId);
 
-        // Closed-order reversal (return of goods) — reverses a committed bonus spend.
-        // Backend refund is Phase 1.5; fail loudly rather than silently mis-handle money.
         public void ReturnPayment(decimal sum, Guid? orderId, Guid paymentTypeId, Guid transactionId,
-            IPointOfSale pointOfSale, IUser cashier, IReceiptPrinter printer,
-            IViewManager viewManager, IPaymentDataContext context, IProgressBar progressBar)
-        {
-            throw new PaymentActionFailedException("Возврат бонусов пока не поддерживается.");
-        }
+            IPointOfSale pointOfSale, IUser cashier, IReceiptPrinter printer, IViewManager viewManager,
+            IPaymentDataContext context)
+            => throw new PaymentActionFailedException("Возврат бонусов пока не поддерживается.");
 
-        public void ReturnPaymentWithoutOrder(decimal sum, Guid paymentTypeId,
-            IPointOfSale pointOfSale, IUser cashier, IReceiptPrinter printer,
-            IViewManager viewManager, IProgressBar progressBar)
-        {
-            throw new PaymentActionFailedException("Возврат бонусов без заказа не поддерживается.");
-        }
+        public void ReturnPaymentWithoutOrder(decimal sum, Guid paymentTypeId, IPointOfSale pointOfSale,
+            IUser cashier, IReceiptPrinter printer, IViewManager viewManager)
+            => throw new PaymentActionFailedException("Возврат бонусов без заказа не поддерживается.");
 
         // ───────────────────────── Silent path (unused) ─────────────────────────
-        // Bonus payment needs a card + network, so we never run silently.
-
         public bool CanPaySilently(decimal sum, Guid? orderId, Guid paymentTypeId, IPaymentDataContext context)
             => false;
 
-        public void PaySilently(decimal sum, Guid? orderId, Guid paymentTypeId, Guid transactionId,
+        public void PaySilently(decimal sum, Guid orderId, Guid paymentTypeId, Guid transactionId,
             IPointOfSale pointOfSale, IUser cashier, IReceiptPrinter printer, IPaymentDataContext context)
             => throw new PaymentActionCancelledException();
 
         // ───────────────────────── Optional hooks ─────────────────────────
-
-        // Called when the tender is added; the amount UI is iiko's. We could pre-fetch
-        // the max spendable here (precheck) — left as a no-op for the first cut.
         public void CollectData(Guid orderId, Guid paymentTypeId, IUser cashier,
-            IReceiptPrinter printer, IViewManager viewManager,
-            IPaymentDataContext context, IProgressBar progressBar)
+            IReceiptPrinter printer, IViewManager viewManager, IPaymentDataContext context)
         {
         }
 
         public void OnPaymentAdded(IOrder order, IPaymentItem paymentItem, IUser cashier,
-            IOperationService operationService, IReceiptPrinter printer,
-            IViewManager viewManager, IPaymentDataContext context, IProgressBar progressBar)
+            IOperationService operations, IReceiptPrinter printer, IViewManager viewManager,
+            IPaymentDataContext context)
         {
         }
 
-        // Whether the bonus amount is editable in the prepayment screen — yes.
-        public bool OnPreliminaryPaymentEditing(IOrder order, IPaymentItem paymentItem,
-            IUser cashier, IOperationService operationService, IReceiptPrinter printer,
-            IViewManager viewManager, IPaymentDataContext context, IProgressBar progressBar)
+        public bool OnPreliminaryPaymentEditing(IOrder order, IPaymentItem paymentItem, IUser cashier,
+            IOperationService operationService, IReceiptPrinter printer, IViewManager viewManager,
+            IPaymentDataContext context)
             => true;
 
-        // ───────────────────────── SDK-free helpers ─────────────────────────
+        public void Dispose() { }
 
+        // ───────────────────────── helpers ─────────────────────────
         private void CancelReservation(Guid? orderId)
         {
             var oid = orderId?.ToString();
             if (!string.IsNullOrEmpty(oid))
                 RunSync(_tracker.CancelBonusAsync(oid));
+        }
+
+        // ⚠ VERIFY item property names against your SDK (IntelliSense on IOrderProductItem):
+        //   likely .Amount (quantity), .Product, .Product.Code, .Product.Name, .Price.
+        private static List<OrderItemDto> MapItems(IOrder order)
+        {
+            return order.Items.OfType<IOrderProductItem>().Select(it => new OrderItemDto
+            {
+                Id = it.Id.ToString(),
+                Product = new ProductInfo
+                {
+                    Id = it.Product.Id.ToString(),
+                    Code = Convert.ToString(it.Product.Code, CultureInfo.InvariantCulture),
+                    Name = it.Product.Name,
+                },
+                Price = Rub(it.Price),
+                Quantity = it.Amount.ToString("F3", CultureInfo.InvariantCulture),
+                Sum = Rub(it.Price * it.Amount),
+                Comment = "",
+            }).ToList();
         }
 
         // Invariant culture: a ru-RU Windows would otherwise emit "900,00" and break the JSON decimal.
