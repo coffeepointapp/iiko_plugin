@@ -9,8 +9,9 @@ using Bonoos.iikoFront.LoyaltyPlugin.Models;
 //  SDK SEAM FILE #2. Implements iiko's external payment system so "Bonoos" shows
 //  in iikoOffice under  Внешний тип оплаты → Безналичный тип.
 //
-//  Method signatures below are the REAL Resto.Front.Api V9 IExternalPaymentProcessor
-//  contract (from the SDK's ExternalPaymentProcessorSample). iikoFront calls:
+//  V9 interface is Resto.Front.Api.IPaymentProcessor (NOT IExternalPaymentProcessor,
+//  which was the v6 name). RegisterPaymentSystem(IPaymentProcessor, ...) takes it.
+//  iikoFront calls:
 //      Pay()                    → /order/pay-by-bonus/     (reserve / spend)
 //      EmergencyCancelPayment() → /order/pay-by-bonus/cancel/
 //      ReturnPayment()          → refund (Phase 1.5 — not on backend yet)
@@ -32,7 +33,7 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
 {
     // Plugins are marshaled across the API boundary, so the processor is a
     // MarshalByRefObject (matches the SDK sample).
-    public sealed class BonoosPaymentProcessor : MarshalByRefObject, IExternalPaymentProcessor, IDisposable
+    public sealed class BonoosPaymentProcessor : MarshalByRefObject, IPaymentProcessor, IDisposable
     {
         private readonly OrderTracker _tracker;
         private readonly Action<string> _log;
@@ -85,6 +86,12 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
             IPaymentDataContext context)
             => throw new PaymentActionFailedException("Возврат бонусов пока не поддерживается.");
 
+        // ⚠ V9 added this. Signature inferred (Silently drops IViewManager) — if VS still
+        //   reports it missing, the params differ: use "Implement Interface" (Ctrl+.).
+        public void ReturnPaymentSilently(decimal sum, Guid? orderId, Guid paymentTypeId, Guid transactionId,
+            IPointOfSale pointOfSale, IUser cashier, IReceiptPrinter printer, IPaymentDataContext context)
+            => throw new PaymentActionFailedException("Возврат бонусов пока не поддерживается.");
+
         public void ReturnPaymentWithoutOrder(decimal sum, Guid paymentTypeId, IPointOfSale pointOfSale,
             IUser cashier, IReceiptPrinter printer, IViewManager viewManager)
             => throw new PaymentActionFailedException("Возврат бонусов без заказа не поддерживается.");
@@ -107,6 +114,16 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
             IOperationService operations, IReceiptPrinter printer, IViewManager viewManager,
             IPaymentDataContext context)
         {
+        }
+
+        // ⚠ V9 added this (bonus tender removed before close). Signature inferred from
+        //   OnPaymentAdded — verify via "Implement Interface" (Ctrl+.) if reported missing.
+        public void OnPaymentDeleting(IOrder order, IPaymentItem paymentItem, IUser cashier,
+            IOperationService operations, IReceiptPrinter printer, IViewManager viewManager,
+            IPaymentDataContext context)
+        {
+            if (order != null)
+                CancelReservation(order.Id);
         }
 
         public bool OnPreliminaryPaymentEditing(IOrder order, IPaymentItem paymentItem, IUser cashier,
