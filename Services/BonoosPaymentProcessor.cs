@@ -141,8 +141,9 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
                 RunSync(_tracker.CancelBonusAsync(oid));
         }
 
-        // ⚠ VERIFY item property names against your SDK (IntelliSense on IOrderProductItem):
-        //   likely .Amount (quantity), .Product, .Product.Code, .Product.Name, .Price.
+        // IProduct (Resto.Front.Api.Data.Assortment) has no `Code`. We send `Number`
+        // (article/SKU); swap to it.Product.FastCode if you prefer the cashier quick-code.
+        // ⚠ Still verify item value props (.Amount / .Price) via IntelliSense if they error.
         private static List<OrderItemDto> MapItems(IOrder order)
         {
             return order.Items.OfType<IOrderProductItem>().Select(it => new OrderItemDto
@@ -151,7 +152,7 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
                 Product = new ProductInfo
                 {
                     Id = it.Product.Id.ToString(),
-                    Code = Convert.ToString(it.Product.Code, CultureInfo.InvariantCulture),
+                    Code = Convert.ToString(it.Product.Number, CultureInfo.InvariantCulture),
                     Name = it.Product.Name,
                 },
                 Price = Rub(it.Price),
