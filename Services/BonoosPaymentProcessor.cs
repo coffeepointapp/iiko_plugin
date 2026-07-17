@@ -49,8 +49,8 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
 
         // ───────────────────────── DEBIT: reserve/spend bonus ─────────────────────────
         // NOTE V9: Pay receives the full IOrder (not just an id) and IOperationService.
-        public void Pay(decimal sum, IOrder order, Guid paymentTypeId, Guid transactionId,
-            IPointOfSale pointOfSale, IUser cashier, IOperationService operations,
+        public void Pay(decimal sum, IOrder order, IPaymentItem paymentItem, Guid transactionId,
+            IPointOfSale pointOfSale, IUser cashier, IOperationService operationService,
             IReceiptPrinter printer, IViewManager viewManager, IPaymentDataContext context)
         {
             if (order == null)
@@ -92,15 +92,15 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
             IPointOfSale pointOfSale, IUser cashier, IReceiptPrinter printer, IPaymentDataContext context)
             => throw new PaymentActionFailedException("Возврат бонусов пока не поддерживается.");
 
-        public void ReturnPaymentWithoutOrder(decimal sum, Guid paymentTypeId, IPointOfSale pointOfSale,
-            IUser cashier, IReceiptPrinter printer, IViewManager viewManager)
+        public void ReturnPaymentWithoutOrder(decimal sum, Guid? orderId, Guid paymentTypeId,
+            IPointOfSale pointOfSale, IUser cashier, IReceiptPrinter printer, IViewManager viewManager)
             => throw new PaymentActionFailedException("Возврат бонусов без заказа не поддерживается.");
 
         // ───────────────────────── Silent path (unused) ─────────────────────────
         public bool CanPaySilently(decimal sum, Guid? orderId, Guid paymentTypeId, IPaymentDataContext context)
             => false;
 
-        public void PaySilently(decimal sum, Guid orderId, Guid paymentTypeId, Guid transactionId,
+        public void PaySilently(decimal sum, IOrder order, IPaymentItem paymentItem, Guid transactionId,
             IPointOfSale pointOfSale, IUser cashier, IReceiptPrinter printer, IPaymentDataContext context)
             => throw new PaymentActionCancelledException();
 
