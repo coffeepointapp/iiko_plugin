@@ -9,17 +9,19 @@ using Bonoos.iikoFront.LoyaltyPlugin.Services;
 //  CONSTRUCTOR (does setup — there is no Init(IPluginContext)), a Dispose()
 //  (teardown), and reaches services via the STATIC PluginContext.
 //
-//  This version registers the Bonoos payment system (so it appears in iikoOffice
-//  under Внешний тип оплаты → Безналичный тип) and wires the payment processor.
-//  The read-only observation hooks (card-scan → lookup, order-change → precheck,
-//  close → confirm/cashback) are the NEXT iteration — see the TODO below; they
-//  need PluginContext.Notifications.SubscribeOn... whose exact names you confirm
-//  via IntelliSense against your installed SDK.
+//  Registers the Bonoos payment system (spend flow = BonoosPaymentProcessor) and
+//  subscribes to order notifications: OrderEditCardSlided (bind card while editing)
+//  and OrderChanged (confirm/cashback when Status == Closed).
 // ─────────────────────────────────────────────────────────────────────────────
 
+using System.Threading.Tasks;
 using Resto.Front.Api;
 using Resto.Front.Api.Attributes;
 using Resto.Front.Api.Attributes.JetBrains;
+using Resto.Front.Api.Data.Common;
+using Resto.Front.Api.Data.Orders;
+using Resto.Front.Api.Data.View;
+using Resto.Front.Api.UI;
 
 namespace Bonoos.iikoFront.LoyaltyPlugin
 {
@@ -31,6 +33,8 @@ namespace Bonoos.iikoFront.LoyaltyPlugin
         private OrderTracker _orderTracker;
         private BonoosPaymentProcessor _paymentProcessor;
         private IDisposable _paymentSystemRegistration;
+        private IDisposable _orderChangedSub;
+        private IDisposable _cardSlidedSub;
         private PluginConfiguration _config;
 
         public Plugin()
@@ -51,10 +55,12 @@ namespace Bonoos.iikoFront.LoyaltyPlugin
                 _paymentSystemRegistration =
                     PluginContext.Operations.RegisterPaymentSystem(_paymentProcessor);
 
-                // TODO (next iteration): subscribe to order + card-scan notifications and route
-                // to _orderTracker for lookup / precheck / confirm. Pattern:
-                //   PluginContext.Notifications.SubscribeOnOrderChanged(order => ...);
-                // Confirm the exact method names + item property names via IntelliSense.
+                // Observation hooks:
+                //  - order closed → confirm (cashback accrual). V9 has no OrderClosed event,
+                //    so we filter OrderChanged by Status == Closed.
+                //  - card swiped while editing the order → bind + lookup (accrual-only flow).
+                _orderChangedSub = PluginContext.Notifications.OrderChanged.Subscribe(OnOrderChanged);
+                _cardSlidedSub = PluginContext.Notifications.OrderEditCardSlided.Subscribe(OnCardSlided);
 
                 Log("Bonoos: plugin initialized (payment system registered)");
             }
@@ -73,12 +79,57 @@ namespace Bonoos.iikoFront.LoyaltyPlugin
             }
             catch { /* best-effort */ }
 
+            _orderChangedSub?.Dispose();
+            _cardSlidedSub?.Dispose();
             _paymentSystemRegistration?.Dispose();   // unregister the payment system
             _paymentProcessor?.Dispose();
             _apiClient?.Dispose();
         }
 
-        // ⚠ Verify the PluginContext.Log API (Info/Warning/Error) via IntelliSense.
+        // ── SDK notification handlers ──
+
+        // Cashier swiped/entered a loyalty card while editing the order → bind + look up,
+        // so cashback accrues on close even without the Bonoos tender being used.
+        private bool OnCardSlided((CardInputDialogResult card, IOrder order, IOperationService os, IViewManager vm) args)
+        {
+            var track = args.card?.FullCardTrack;
+            if (string.IsNullOrWhiteSpace(track) || args.order == null)
+                return false;   // nothing we can use — let other handlers process the swipe
+            var oid = args.order.Id.ToString();
+            FireAndForget(_orderTracker.LookupClientAsync(
+                oid, args.order.Number.ToString(), new CardInfo { Track = track }));
+            return true;         // handled (return false to coexist with other card handlers)
+        }
+
+        // Order closed → commit the receipt so cashback accrues on the fiscal portion.
+        private void OnOrderChanged(EntityChangedEventArgs<IOrder> e)
+        {
+            var order = e?.Entity;
+            if (order == null || order.Status != OrderStatus.Closed)
+                return;
+            var oid = order.Id.ToString();
+            if (!_orderTracker.TryGetOrder(oid, out var state))
+                return;          // no loyalty interaction on this order — nothing to confirm
+            RunSync(_orderTracker.ConfirmAsync(
+                oid, order.Number.ToString(), SdkMap.Items(order), SdkMap.Payments(order),
+                state.Card, DateTimeOffset.Now.ToString("O")));
+            _orderTracker.RemoveOrder(oid);
+        }
+
+        private static void RunSync(Task task)
+        {
+            try { task.ConfigureAwait(false).GetAwaiter().GetResult(); }
+            catch { /* best-effort */ }
+        }
+
+        private void FireAndForget(Task task)
+        {
+            if (task == null) return;
+            task.ContinueWith(
+                t => Log($"Bonoos: background call failed — {t.Exception?.GetBaseException().Message}"),
+                TaskContinuationOptions.OnlyOnFaulted);
+        }
+
         private void Log(string message)
         {
             try { PluginContext.Log.Info(message); }

@@ -48,7 +48,8 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
         public string PaymentSystemName => "Bonoos";
 
         // ───────────────────────── DEBIT: reserve/spend bonus ─────────────────────────
-        // NOTE V9: Pay receives the full IOrder (not just an id) and IOperationService.
+        // Pay MUST stay synchronous (an async Pay crashes the processor — SDK issue #13);
+        // we call the backend blocking via RunSync. V9 Pay gets the full IOrder + IViewManager.
         public void Pay(decimal sum, IOrder order, IPaymentItem paymentItem, Guid transactionId,
             IPointOfSale pointOfSale, IUser cashier, IOperationService operationService,
             IReceiptPrinter printer, IViewManager viewManager, IPaymentDataContext context)
@@ -57,17 +58,51 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
                 throw new PaymentActionFailedException("Оплата бонусами доступна только внутри заказа.");
 
             var oid = order.Id.ToString();
-            if (!_tracker.TryGetOrder(oid, out var state) || state.Card == null)
-                throw new PaymentActionFailedException("Сначала отсканируйте карту клиента.");
+            var state = _tracker.GetOrCreateOrder(oid, order.Number.ToString());
+
+            // The card may already be bound (cashier swiped it while editing the order,
+            // via OrderEditCardSlided). If not, prompt on the payment screen — V9 has no
+            // payment-screen scan event, so the dialog is the path here.
+            if (state.Card == null)
+            {
+                var card = PromptForCard(viewManager);
+                if (card == null)
+                    throw new PaymentActionCancelledException(); // cashier closed the dialog
+
+                var lookup = RunSync(_tracker.LookupClientAsync(oid, order.Number.ToString(), card));
+                if (lookup == null || !lookup.Found)
+                    throw new PaymentActionFailedException("Карта не найдена в системе лояльности.");
+                // LookupClientAsync bound the card to state already.
+            }
 
             var ok = RunSync(_tracker.PayByBonusAsync(
-                oid, order.Number.ToString(), MapItems(order), state.Card, Rub(sum)));
+                oid, order.Number.ToString(), SdkMap.Items(order), state.Card, SdkMap.Money(sum)));
 
             if (!ok)
                 throw new PaymentActionFailedException("Не удалось списать бонусы.");
 
             state.ReservedTransactionId = transactionId.ToString();
-            _log($"Bonoos: pay-by-bonus ok order={oid} sum={Rub(sum)}");
+            PluginContext.Operations.AddNotificationMessage($"Списано {SdkMap.Money(sum)} ₽ бонусами", "Bonoos");
+            _log($"Bonoos: pay-by-bonus ok order={oid} sum={SdkMap.Money(sum)}");
+        }
+
+        // Prompts the cashier for the loyalty card on the payment screen. The dialog
+        // accepts a swipe (card slider), a scanned QR/barcode, or a typed number.
+        private static CardInfo PromptForCard(IViewManager viewManager)
+        {
+            var result = viewManager.ShowExtendedKeyboardDialog(
+                "Карта лояльности", isMultiline: false, enableCardSlider: true, enableBarcode: true);
+            switch (result)
+            {
+                case CardInputDialogResult card:      // swiped magnetic card
+                    return new CardInfo { Track = card.FullCardTrack };
+                case BarcodeInputDialogResult barcode: // scanned QR/barcode (Bonoos Wallet)
+                    return new CardInfo { Track = barcode.Barcode };
+                case StringInputDialogResult typed:    // typed on the keyboard (phone/number)
+                    return new CardInfo { Number = typed.Result };
+                default:
+                    return null;                       // cashier cancelled (result is null)
+            }
         }
 
         // ───────────────────────── CANCEL / REFUND ─────────────────────────
@@ -140,30 +175,6 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
             if (!string.IsNullOrEmpty(oid))
                 RunSync(_tracker.CancelBonusAsync(oid));
         }
-
-        // IProduct (Resto.Front.Api.Data.Assortment) has no `Code`. We send `Number`
-        // (article/SKU); swap to it.Product.FastCode if you prefer the cashier quick-code.
-        // ⚠ Still verify item value props (.Amount / .Price) via IntelliSense if they error.
-        private static List<OrderItemDto> MapItems(IOrder order)
-        {
-            return order.Items.OfType<IOrderProductItem>().Select(it => new OrderItemDto
-            {
-                Id = it.Id.ToString(),
-                Product = new ProductInfo
-                {
-                    Id = it.Product.Id.ToString(),
-                    Code = Convert.ToString(it.Product.Number, CultureInfo.InvariantCulture),
-                    Name = it.Product.Name,
-                },
-                Price = Rub(it.Price),
-                Quantity = it.Amount.ToString("F3", CultureInfo.InvariantCulture),
-                Sum = Rub(it.Price * it.Amount),
-                Comment = "",
-            }).ToList();
-        }
-
-        // Invariant culture: a ru-RU Windows would otherwise emit "900,00" and break the JSON decimal.
-        private static string Rub(decimal value) => value.ToString("F2", CultureInfo.InvariantCulture);
 
         private static T RunSync<T>(Task<T> task)
         {
