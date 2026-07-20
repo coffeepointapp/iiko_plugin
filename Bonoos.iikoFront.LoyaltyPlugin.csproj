@@ -52,6 +52,7 @@
   <ItemGroup>
     <Reference Include="Resto.Data">
       <HintPath>..\..\..\..\Program Files\iiko\iikoRMS\Front.Net\Resto.Data.dll</HintPath>
+      <Private>False</Private>
     </Reference>
     <Reference Include="Resto.Front.Api">
       <HintPath>..\..\..\..\Program Files\iiko\iikoRMS\Front.Net\Resto.Front.Api.dll</HintPath>
@@ -59,18 +60,21 @@
     </Reference>
   </ItemGroup>
   <!--
-    Newtonsoft.Json: reference the copy that ships with iikoFront (same folder as
-    Resto.Front.Api.dll). Private=False so we don't ship our own copy — iikoFront
-    already has Newtonsoft loaded in-process, and a second copy risks a binding
-    conflict. Copy Newtonsoft.Json.dll into iikoFrontSDK\ alongside the API DLL.
+    Newtonsoft.Json is OUR dependency. iikoFront loads each plugin in its own
+    container process from its own subfolder, so ship our deps there:
+    Private=True (Copy Local) puts Newtonsoft.Json.dll next to the plugin DLL.
+    (No in-process conflict with iiko's copy — it's a separate process.)
+    Host assemblies (Resto.*) must stay Private=False — the container binds them
+    to the host's copies; shipping ours would break type identity.
   -->
   <ItemGroup>
     <Reference Include="Newtonsoft.Json">
       <HintPath>..\..\..\..\Program Files\iiko\iikoRMS\Front.Net\Newtonsoft.Json.dll</HintPath>
-      <Private>False</Private>
+      <Private>True</Private>
     </Reference>
     <Reference Include="Resto.Front.Api.V9">
       <HintPath>..\..\..\..\Program Files\iiko\iikoRMS\Front.Net\Resto.Front.Api.V9.dll</HintPath>
+      <Private>False</Private>
     </Reference>
     <Reference Include="System" />
     <Reference Include="System.Net.Http" />
@@ -88,11 +92,7 @@
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="plugin.config">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <!-- Sample config: copied to the output dir only if the operator hasn't
-         already placed a real one there (PreserveNewest won't clobber edits). -->
+    <!-- Runtime config sidecar (our own), copied next to the DLL. -->
     <None Include="Bonoos.LoyaltyPlugin.config.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
