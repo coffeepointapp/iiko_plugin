@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "BonoosLoyalty": {
+      "commandName": "Executable",
+      "executablePath": "C:\\Program Files\\iiko\\iikoRMS\\Front.Net\\Resto.Front.Api.Host.exe",
+      "commandLineArgs": "/a=\"$(TargetPath)\" /c=\"Bonoos.iikoFront.LoyaltyPlugin.Plugin\" /m=21016318 /l=\"$(ProjectDir)debug.log\"",
+      "workingDirectory": "C:\\Program Files\\iiko\\iikoRMS\\Front.Net"
+    }
+  }
+}

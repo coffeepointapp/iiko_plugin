@@ -24,10 +24,7 @@ using Resto.Front.Api.Attributes.JetBrains;
 namespace Bonoos.iikoFront.LoyaltyPlugin
 {
     [UsedImplicitly]
-    // ⚠ Payment-system plugins are LICENSED by iiko. 21005918 is iiko's SAMPLE
-    //   module id (works with a test/SDK license). Replace with the module id iiko
-    //   issues you, or RegisterPaymentSystem throws LicenseRestrictionException.
-    [PluginLicenseModuleId(21005918)]
+    [PluginLicenseModuleId(21016318)]
     public sealed class Plugin : IFrontPlugin
     {
         private BonoosApiClient _apiClient;

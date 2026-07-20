@@ -1,101 +1,26 @@
-<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+<Project Sdk="Microsoft.NET.Sdk">
+
   <PropertyGroup>
-    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
-    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
-    <ProjectGuid>{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}</ProjectGuid>
-    <OutputType>Library</OutputType>
-    <AppDesignerFolder>Properties</AppDesignerFolder>
-    <RootNamespace>Bonoos.iikoFront.LoyaltyPlugin</RootNamespace>
     <AssemblyName>Bonoos.iikoFront.LoyaltyPlugin</AssemblyName>
-    <TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion>
-    <FileAlignment>512</FileAlignment>
-    <Deterministic>true</Deterministic>
+    <RootNamespace>Bonoos.iikoFront.LoyaltyPlugin</RootNamespace>
+    <TargetFramework>net472</TargetFramework>
+    <LangVersion>10.0</LangVersion>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
   </PropertyGroup>
-  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
-    <DebugSymbols>true</DebugSymbols>
-    <DebugType>full</DebugType>
-    <Optimize>false</Optimize>
-    <OutputPath>bin\Debug\</OutputPath>
-    <DefineConstants>DEBUG;TRACE</DefineConstants>
-    <ErrorReport>prompt</ErrorReport>
-    <WarningLevel>4</WarningLevel>
-  </PropertyGroup>
-  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
-    <DebugType>pdbonly</DebugType>
-    <Optimize>true</Optimize>
-    <OutputPath>bin\Release\</OutputPath>
-    <DefineConstants>TRACE</DefineConstants>
-    <ErrorReport>prompt</ErrorReport>
-    <WarningLevel>4</WarningLevel>
-  </PropertyGroup>
-  <!--
-    ============================================================
-    iikoFront Plugin SDK references
-    ============================================================
-    Place the SDK DLLs from the iikoFront VM install into an iikoFrontSDK\
-    folder at the repo root:
-      iikoFrontSDK\Resto.Front.Api.dll   (RMS 9: all API types merged into this one DLL)
-      iikoFrontSDK\Newtonsoft.Json.dll   (ships with iikoFront)
 
-    Or update HintPath to match the actual paths on your VM machine.
-
-    ⚠️ Set Copy Local = False so SDK DLLs are NOT redistributed.
-    ============================================================
-  -->
-  <!--
-    All iiko SDK types (including the Data / UI / Devices / Security / Exceptions
-    namespaces) live in a single merged Resto.Front.Api.dll in RMS 9 — one
-    reference is enough. Copy that DLL from the iikoFront install into
-    iikoFrontSDK\ (or repoint the HintPath at the install folder).
-  -->
   <ItemGroup>
-    <Reference Include="Resto.Data">
-      <HintPath>..\..\..\..\Program Files\iiko\iikoRMS\Front.Net\Resto.Data.dll</HintPath>
-      <Private>False</Private>
-    </Reference>
-    <Reference Include="Resto.Front.Api">
-      <HintPath>..\..\..\..\Program Files\iiko\iikoRMS\Front.Net\Resto.Front.Api.dll</HintPath>
-      <Private>False</Private>
-    </Reference>
-  </ItemGroup>
-  <!--
-    Newtonsoft.Json is OUR dependency. iikoFront loads each plugin in its own
-    container process from its own subfolder, so ship our deps there:
-    Private=True (Copy Local) puts Newtonsoft.Json.dll next to the plugin DLL.
-    (No in-process conflict with iiko's copy — it's a separate process.)
-    Host assemblies (Resto.*) must stay Private=False — the container binds them
-    to the host's copies; shipping ours would break type identity.
-  -->
-  <ItemGroup>
-    <Reference Include="Newtonsoft.Json">
-      <HintPath>..\..\..\..\Program Files\iiko\iikoRMS\Front.Net\Newtonsoft.Json.dll</HintPath>
-      <Private>True</Private>
-    </Reference>
-    <Reference Include="Resto.Front.Api.V9">
-      <HintPath>..\..\..\..\Program Files\iiko\iikoRMS\Front.Net\Resto.Front.Api.V9.dll</HintPath>
-      <Private>False</Private>
-    </Reference>
-    <Reference Include="System" />
-    <Reference Include="System.Net.Http" />
-    <Reference Include="System.Core" />
-    <Reference Include="System.Xml" />
-  </ItemGroup>
-  <ItemGroup>
-    <Compile Include="Models\BonoosApiModels.cs" />
-    <Compile Include="Models\PluginConfiguration.cs" />
-    <Compile Include="Services\BonoosApiClient.cs" />
-    <Compile Include="Services\BonoosPaymentProcessor.cs" />
-    <Compile Include="Services\ConfigLoader.cs" />
-    <Compile Include="Services\OrderTracker.cs" />
-    <Compile Include="Plugin.cs" />
-    <Compile Include="Properties\AssemblyInfo.cs" />
-  </ItemGroup>
-  <ItemGroup>
-    <!-- Runtime config sidecar (our own), copied next to the DLL. -->
-    <None Include="Bonoos.LoyaltyPlugin.config.json">
+    <Content Include="Manifest.xml">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <None Update="Bonoos.LoyaltyPlugin.config.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
-  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+    <PackageReference Include="Resto.Front.Api.V9" Version="9.5.6059" />
+    <PackageReference Include="System.Net.Http" Version="4.3.4" PrivateAssets="all" />
+  </ItemGroup>
+
 </Project>

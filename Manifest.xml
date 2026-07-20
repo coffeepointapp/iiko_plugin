@@ -1,0 +1,7 @@
+<?xml version="1.0"?>
+<Manifest xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <FileName>Bonoos.iikoFront.LoyaltyPlugin.dll</FileName>
+  <TypeName>Bonoos.iikoFront.LoyaltyPlugin.Plugin</TypeName>
+  <ApiVersion>V9</ApiVersion>
+  <LicenseModuleId>21016318</LicenseModuleId>
+</Manifest>

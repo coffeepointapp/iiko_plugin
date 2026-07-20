@@ -1,0 +1,12 @@
+﻿
+================================================================================
+Resto.Front.Api.Host ver. 9.4.7039.0
+================================================================================
+Host process net472 (24688) for “Bonoos.iikoFront.LoyaltyPlugin.Plugin” class from “D:\плагины\coffe point plugin\bin\Debug\net472\Bonoos.iikoFront.LoyaltyPlugin.dll” assembly is running in background mode.
+Plugin assembly info:
+  Bonoos 
+  Bonoos.iikoFront.LoyaltyPlugin v1.0.0.0, Bonoos loyalty integration for iikoFront (Bonoos.iikoFront.LoyaltyPlugin.dll v1.0.0.0, Bonoos.iikoFront.LoyaltyPlugin)
+
+[2026-07-20 14:41:23,941]  INFO [ 1] - Created plugin domain “net472” using “C:\Program Files\iiko\iikoRMS\Front.Net\Resto.Front.Api.Host.exe.Config”
+[2026-07-20 14:41:24,008]  INFO [ 1] - Registering ipc channel...
+[2026-07-20 14:41:24,159]  INFO [ 1] - Initialized as V9 plugin.
