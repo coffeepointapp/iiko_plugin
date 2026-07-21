@@ -6,7 +6,10 @@ _sdk_ref/
 bin/
 obj/
 
-## Visual Studio user files
+## Local / debug artifacts
+tools/
+*.zip
+debug.log
 *.user
 *.suo
 *.sln.docstates
@@ -25,3 +28,6 @@ _ReSharper.*/
 
 ## macOS
 .DS_Store
+
+## Runtime config (lives in AppData on the terminal)
+Bonoos.LoyaltyPlugin.config.json

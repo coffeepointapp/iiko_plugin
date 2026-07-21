@@ -22,6 +22,41 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
         /// </summary>
         public int? AvailableBonusKopecks { get; set; }
 
+        /// <summary>Last lookup card_type (LOYALTY_COINS / DISCOUNT / …).</summary>
+        public string CardType { get; set; }
+
+        /// <summary>Discount % when CardType is DISCOUNT; otherwise null.</summary>
+        public int? DiscountPercent { get; set; }
+
+        /// <summary>Последняя повешенная сумма «свободной» скидки (руб) — антицикл OrderChanged.</summary>
+        public decimal? AppliedFlexibleDiscountSum { get; set; }
+
+        /// <summary>Когда гость привязан (UTC).</summary>
+        public DateTime BoundAtUtc { get; set; }
+
+        /// <summary>Последний успешный lookup (UTC) — refresh через 1 час.</summary>
+        public DateTime LastLookupAtUtc { get; set; }
+
+        public bool IsDiscountCard =>
+            string.Equals(CardType, "DISCOUNT", StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>Display name from last successful lookup.</summary>
+        public string GuestDisplayName { get; set; }
+
+        /// <summary>Balance display string from last lookup.</summary>
+        public string BalanceDisplay { get; set; }
+
+        public int? CashbackPercent { get; set; }
+
+        /// <summary>
+        /// Сумма бонусной оплаты, зафиксированная диалогом «Списать».
+        /// Нумпад не должен её менять; удаление строки сбрасывает это поле.
+        /// </summary>
+        public decimal? LockedBonusPaymentSum { get; set; }
+
+        /// <summary>True once the cashier completed (or skipped) the payment-screen loyalty gate.</summary>
+        public bool PaymentGateDone { get; set; }
+
         /// <summary>iiko payment transactionId for the active reservation (audit only).</summary>
         public string ReservedTransactionId { get; set; }
 
@@ -51,6 +86,10 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
         // this just avoids the redundant POSTs). Tiny GUID keys; lives for the
         // plugin's lifetime, which is fine for a cashier session.
         private readonly ConcurrentDictionary<string, byte> _confirmSent =
+            new ConcurrentDictionary<string, byte>();
+
+        /// <summary>Precheck уже ушёл на Bill для этого order_id — не повторяем.</summary>
+        private readonly ConcurrentDictionary<string, byte> _precheckSent =
             new ConcurrentDictionary<string, byte>();
 
         public event Action<string, string> OnCashierNotification;
@@ -89,20 +128,63 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
 
             if (response != null && response.Found)
             {
-                state.AvailableBonusKopecks = response.BalanceKopecks;   // cache for the pay-by-bonus cap
-                var text = !string.IsNullOrEmpty(response.BalanceDisplay)
-                    ? $"Баланс: {response.BalanceDisplay}, кэшбэк: {response.CashbackPercent}%"
-                    : "Клиент найден.";
-                OnCashierNotification?.Invoke(orderId, text);
-            }
-            else if (response != null && !string.IsNullOrEmpty(response.Message))
-            {
-                OnCashierNotification?.Invoke(orderId, response.Message);
+                state.CardType = response.CardType;
+                state.DiscountPercent = response.DiscountPercent;
+                state.AvailableBonusKopecks = response.IsCashbackCard ? response.BalanceKopecks : 0;
+                state.BalanceDisplay = response.BalanceDisplay;
+                state.CashbackPercent = response.CashbackPercent;
+                state.GuestDisplayName = !string.IsNullOrWhiteSpace(response.FirstName)
+                    ? $"{response.FirstName} {response.LastName}".Trim()
+                    : (string.IsNullOrWhiteSpace(response.Username) ? "Клиент" : response.Username);
+
+                var now = DateTime.UtcNow;
+                if (state.BoundAtUtc == default)
+                    state.BoundAtUtc = now;
+                state.LastLookupAtUtc = now;
             }
 
             OnClientLookedUp?.Invoke(orderId, response);
             return response;
         }
+
+        /// <summary>Отвязать гостя от заказа (кнопка «Гость» → Отвязать).</summary>
+        public void UnbindGuest(string orderId)
+        {
+            if (!TryGetOrder(orderId, out var state))
+                return;
+
+            state.Card = null;
+            state.CardType = null;
+            state.DiscountPercent = null;
+            state.AppliedFlexibleDiscountSum = null;
+            state.AvailableBonusKopecks = null;
+            state.BalanceDisplay = null;
+            state.CashbackPercent = null;
+            state.GuestDisplayName = null;
+            state.LockedBonusPaymentSum = null;
+            state.BonusReserved = false;
+            state.ReservedAmount = null;
+            state.ReservedTransactionId = null;
+            state.PaymentGateDone = false;
+            state.BoundAtUtc = default;
+            state.LastLookupAtUtc = default;
+        }
+
+        public void LockBonusPaymentSum(string orderId, decimal sum)
+        {
+            if (TryGetOrder(orderId, out var state))
+                state.LockedBonusPaymentSum = sum;
+        }
+
+        public void ClearLockedBonusPaymentSum(string orderId)
+        {
+            if (TryGetOrder(orderId, out var state))
+                state.LockedBonusPaymentSum = null;
+        }
+
+        /// <summary>True when this order already has a Bonoos loyalty card bound.</summary>
+        public bool HasBoundCard(string orderId) =>
+            TryGetOrder(orderId, out var state) && state.Card != null;
 
         public async Task<FrontolResponse> PrecheckAsync(string orderId, string orderNumber, List<OrderItemDto> items, CardInfo card)
         {
@@ -119,7 +201,16 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
             }).ConfigureAwait(false);
 
             if (response != null && response.Code == 0)
-                NotifyCashierAndCustomer(response);
+            {
+                // Precheck quote stays silent in UI — card info already shown via ShowOkPopup on bind.
+                // Customer display texts (if any) still raised for optional wiring.
+                if (response.CustomerInformation != null)
+                {
+                    foreach (var info in response.CustomerInformation)
+                        if (!string.IsNullOrEmpty(info.Text))
+                            OnCustomerNotification?.Invoke(orderId, info.Text);
+                }
+            }
 
             return response;
         }
@@ -148,7 +239,7 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
             {
                 state.BonusReserved = true;
                 state.ReservedAmount = amount;
-                NotifyCashierAndCustomer(response);
+                // Modal shown by payment processor via IViewManager — no notification spam.
             }
             else
             {
@@ -199,23 +290,11 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
             if (response != null && response.Ok)
             {
                 state.Confirmed = true;
-                state.BonusReserved = false;   // spend is committed by the confirmed receipt
+                state.BonusReserved = false;
                 state.ReservedAmount = null;
-                if (!string.IsNullOrEmpty(response.Message))
-                    OnCashierNotification?.Invoke(orderId, response.Message);
-            }
-            else if (response != null && !string.IsNullOrEmpty(response.Message))
-            {
-                OnCashierNotification?.Invoke(orderId, response.Message);
             }
 
             return response;
-        }
-
-        public void RemoveOrder(string orderId)
-        {
-            if (orderId != null)
-                _orders.TryRemove(orderId, out _);
         }
 
         /// <summary>
@@ -226,6 +305,20 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
         public bool TryMarkConfirmSent(string orderId)
         {
             return orderId != null && _confirmSent.TryAdd(orderId, 0);
+        }
+
+        /// <summary>
+        /// Precheck ровно один раз при переходе заказа в Bill.
+        /// </summary>
+        public bool TryMarkPrecheckSent(string orderId)
+        {
+            return orderId != null && _precheckSent.TryAdd(orderId, 0);
+        }
+
+        public void RemoveOrder(string orderId)
+        {
+            if (orderId != null)
+                _orders.TryRemove(orderId, out _);
         }
 
         /// <summary>
@@ -244,19 +337,6 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
                 }
             }
             _orders.Clear();
-        }
-
-        private void NotifyCashierAndCustomer(FrontolResponse response)
-        {
-            if (response.CashierInformation != null)
-                foreach (var info in response.CashierInformation)
-                    if (!string.IsNullOrEmpty(info.Text))
-                        OnCashierNotification?.Invoke(null, info.Text);
-
-            if (response.CustomerInformation != null)
-                foreach (var info in response.CustomerInformation)
-                    if (!string.IsNullOrEmpty(info.Text))
-                        OnCustomerNotification?.Invoke(null, info.Text);
         }
     }
 }

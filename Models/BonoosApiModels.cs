@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Newtonsoft.Json;
 
@@ -108,8 +109,24 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Models
         [JsonProperty("cashback_percent")]
         public int? CashbackPercent { get; set; }
 
+        /// <summary>
+        /// LOYALTY_COINS | DISCOUNT | SUBSCRIPTION | … — branch pay/discount UX on this.
+        /// </summary>
+        [JsonProperty("card_type")]
+        public string CardType { get; set; }
+
+        [JsonProperty("discount_percent")]
+        public int? DiscountPercent { get; set; }
+
         [JsonProperty("message")]
         public string Message { get; set; }
+
+        public bool IsCashbackCard =>
+            string.IsNullOrEmpty(CardType) ||
+            string.Equals(CardType, "LOYALTY_COINS", StringComparison.OrdinalIgnoreCase);
+
+        public bool IsDiscountCard =>
+            string.Equals(CardType, "DISCOUNT", StringComparison.OrdinalIgnoreCase);
     }
 
     // ────────────────────────────── Common request body (precheck, pay-by-bonus, cancel, confirm) ──
@@ -164,7 +181,12 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Models
 
     public class ClientInfo
     {
+        /// <summary>
+        /// OpenAPI: string for LOYALTY_COINS (e.g. "1400"), number 0 otherwise.
+        /// Prefer lookup <c>balance_kopecks</c> for arithmetic.
+        /// </summary>
         [JsonProperty("availableAmount")]
+        [JsonConverter(typeof(FlexibleDecimalConverter))]
         public decimal? AvailableAmount { get; set; }
 
         [JsonProperty("mobilePhone")]

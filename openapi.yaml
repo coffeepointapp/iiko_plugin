@@ -1,0 +1,1067 @@
+openapi: 3.0.3
+
+info:
+  title: Bonoos Loyalty API for iikoFront
+  version: "1.0.0"
+  description: |
+    REST API consumed by the **Bonoos iikoFront loyalty plugin**. The plugin is a thin
+    client: it captures the customer's loyalty card, calls these endpoints at the right
+    order-lifecycle moments, and renders the returned Russian text. All loyalty math
+    (cashback %, brand-card sync, dedup) happens server-side.
+
+    ## Order lifecycle → endpoint mapping
+
+    ```
+    card scanned / typed   → POST /client/lookup/            balance + cashback%   [read-only]
+    items change / precheck→ POST /order/precheck/           quote bonus+cashback  [read-only]
+    pay with bonus         → POST /order/pay-by-bonus/       reserve N ₽   (DEBIT / spend)
+      bonus removed        → POST /order/pay-by-bonus/cancel/ release reservation
+    check closed           → POST /order/confirm/            commit receipt (CREDIT / earn)
+    ```
+
+    Debit and credit happen on **different** calls: the spend commits at
+    `pay-by-bonus`, the cashback is earned at `confirm` (on the fiscal — cash/card —
+    portion only, never on the bonus-paid portion).
+
+    ## Test environment
+
+    A dev tunnel is available for integration testing (see the **TEST** entry under
+    `servers`). Credentials below are **test-only** — never used in production.
+
+    | | |
+    |---|---|
+    | Base URL | `https://0hst46kl-8000.euw.devtunnels.ms/api/v1/pos/partners/iiko` |
+    | `tenant_id` | `ad312514-b608-4d0c-9d79-00ba4b752615` |
+    | Token | `1234567890` (send as `Bearer 1234567890`) |
+    | Test card (`card.track`) | `56562dc7-c9e7-4553-8ef6-e052e3ba099f` |
+    | Test chat id (`card.number`) | `57460843` |
+
+    Verified working:
+
+    ```bash
+    curl -X POST \
+      "https://0hst46kl-8000.euw.devtunnels.ms/api/v1/pos/partners/iiko/ad312514-b608-4d0c-9d79-00ba4b752615/client/lookup/" \
+      -H "Content-Type: application/json" \
+      -H "Authorization: Bearer 1234567890" \
+      -H "X-Bonoos-Authorization: Bearer 1234567890" \
+      -d '{"card":{"track":"56562dc7-c9e7-4553-8ef6-e052e3ba099f"}}'
+    ```
+
+    The test card is a **`LOYALTY_COINS`** (cashback) card — verified returning
+    `card_type: "LOYALTY_COINS"`, a non-zero balance and `cashback_percent: 5`, so the
+    full bonus flow (lookup → precheck → pay-by-bonus → cancel → confirm) can be
+    exercised against it. To test the **discount** path you'll additionally need a
+    `DISCOUNT` card — ask for one.
+
+    The dev tunnel host is ephemeral — if requests stop resolving, ask for a fresh URL.
+
+    ## Card types — the POS scans both cashback and discount cards
+
+    `/client/lookup/` returns a `card_type`; **branch on it**:
+
+    | `card_type` | What to do |
+    |---|---|
+    | `LOYALTY_COINS` | Cashback card. Show `balance_kopecks` / `cashback_percent`. Bonus spending (`/order/pay-by-bonus/`) **is** available. |
+    | `DISCOUNT` | Discount card. Show `discount_percent`. **Do not** offer bonus spending. Apply `document.positions[].discountAmount` (kopecks) returned by `/order/precheck/`. |
+    | `SUBSCRIPTION` | Subscription card; covered positions come back in `document.positions`. |
+
+    Applying the discount to the check is the **POS's job** — this API only computes and
+    returns the amounts (same contract the Frontol POS uses).
+
+    ## ⚠️ Money units (there is an inversion between request and response)
+
+    | Context | Unit |
+    |---|---|
+    | **Request** `price` / `quantity` / `sum` / `amount` | **Rubles**, decimal (send as string, e.g. `"900.00"`) |
+    | **Response** `balance_kopecks`, `fiscal_amount`, `bonus_credit_amount`, `bonus_debit_amount` | **Kopecks**, integer (`90000` = 900.00 ₽) |
+    | **Response** `document.positions[].paidAmount` / `discountAmount` | **Kopecks**, number |
+    | **Response** `client.availableAmount` | **Rubles** — display value only. ⚠️ JSON type varies: a **string** for cashback cards, the **number** `0` otherwise. Parse defensively; prefer `balance_kopecks` for arithmetic. |
+
+    1 bonus / 1 coin = 1 kopeck.
+
+    ## ⚠️ Field-name inversion on `/order/confirm/`
+
+    The names are from the *system's bonus-ledger* perspective, not the card's:
+
+    * `bonus_credit_amount` = bonuses **SPENT** by the customer (debited from the card).
+    * `bonus_debit_amount`  = cashback **EARNED** by the customer (credited to the card).
+
+    Do not invert these in the cashier UI.
+
+    ## Idempotency & cleanup rules
+
+    * Use the iiko order GUID as `order_id` on **every** call for one order; keep it
+      stable across retries.
+    * `/order/confirm/` is deduped server-side on `order_id` — a double close returns
+      `{"ok": true, "duplicate": true}` and does **not** double-credit. Safe to retry.
+    * If `/order/pay-by-bonus/` succeeds but the order is abandoned without a `cancel`
+      or a `confirm`, **the bonus stays spent**. The client MUST guarantee a `cancel`
+      on abandonment / bonus-payment removal.
+
+    ## Error-handling expectations
+
+    * **Never block closing a check** because a loyalty call failed. On `ok: false` or a
+      timeout, show the returned `message` and let the cashier close the receipt anyway.
+    * Treat `code != 0` or a null body from precheck / pay-by-bonus as "no loyalty for
+      this order" and continue the sale normally.
+    * Render `cashierInformation[].text` on the cashier screen and
+      `customerInformation[].text` on the customer display verbatim — they are
+      pre-localized Russian strings.
+
+  contact:
+    name: Bonoos
+
+servers:
+  - url: https://0hst46kl-8000.euw.devtunnels.ms/api/v1/pos/partners/iiko
+    description: |
+      **TEST** — dev tunnel for integration testing. Ephemeral: the host changes when the
+      tunnel is restarted, so confirm it's still live before a session. Test credentials
+      are in the description above.
+  - url: https://pos.bonoos.ru/iiko
+    description: PRODUCTION — Yandex API Gateway (recommended edge for POS terminals)
+  - url: https://bonoos.ru/api/v1/pos/partners/iiko
+    description: PRODUCTION — direct backend (bypasses the gateway)
+
+security:
+  - bearerAuth: []
+  - bonoosAuthHeader: []
+
+tags:
+  - name: client
+    description: Customer identification
+  - name: order
+    description: Order lifecycle (quote, spend, cancel, commit)
+
+paths:
+
+  /{tenant_id}/client/lookup/:
+    post:
+      tags: [client]
+      operationId: clientLookup
+      summary: Identify a customer and return balance + cashback level
+      description: |
+        Read-only. Call when the cashier scans or types the loyalty card.
+        `balance_kopecks` is the **brand-wide** total across all the customer's cards.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClientLookupRequest'
+            examples:
+              scannedQr:
+                summary: Scanned Wallet QR — UUID of the card in `track`
+                value:
+                  card:
+                    track: "56562dc7-c9e7-4553-8ef6-e052e3ba099f"
+              typedNumber:
+                summary: Manually typed Telegram chat id (digits) in `number`
+                value:
+                  card:
+                    number: "57460843"
+      responses:
+        '200':
+          description: Lookup resolved (check the `found` flag)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientLookupResponse'
+              examples:
+                foundCashbackCard:
+                  summary: Cashback card (LOYALTY_COINS) — bonus spending available
+                  value:
+                    found: true
+                    card_id: "443a5235-7a6f-40a7-968e-07d6a4063f81"
+                    client_profile_id: "9df2bf17-52f8-4d9c-9e5e-dcb644280ae5"
+                    username: "ga_app"
+                    first_name: ""
+                    last_name: ""
+                    balance_kopecks: 140015
+                    balance_display: "1400"
+                    cashback_percent: 5
+                    card_type: "LOYALTY_COINS"
+                    discount_percent: null
+                foundDiscountCard:
+                  summary: Discount card (DISCOUNT) — show the %, do NOT offer bonus spending
+                  value:
+                    found: true
+                    card_id: "1f0c9a44-2b77-4d51-9a3e-77c1b2e4d900"
+                    client_profile_id: "9df2bf17-52f8-4d9c-9e5e-dcb644280ae5"
+                    username: "ga_app"
+                    first_name: ""
+                    last_name: ""
+                    balance_kopecks: 0
+                    balance_display: "0"
+                    cashback_percent: 0
+                    card_type: "DISCOUNT"
+                    discount_percent: 10
+                notFound:
+                  value:
+                    found: false
+                    message: "Клиент не найден."
+                noCard:
+                  value:
+                    found: false
+                    message: "Карта не указана."
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /{tenant_id}/order/precheck/:
+    post:
+      tags: [order]
+      operationId: orderPrecheck
+      summary: Quote available bonus + cashback for an open order (no state change)
+      description: |
+        Read-only. Call when the order items change or the cashier opens the pre-check.
+
+        **The response depends on the scanned card's `card_type`** (see `/client/lookup/`):
+
+        * **`LOYALTY_COINS` (cashback card)** — `client.availableAmount` is the spendable
+          bonus in RUBLES. Use it to cap the bonus payment amount.
+          `document.positions[].discountAmount` is `0`.
+        * **`DISCOUNT` (discount card)** — `client.availableAmount` is `0` (no bonus to
+          spend). Instead, **`document.positions[].discountAmount` carries the discount
+          per position, in KOPECKS**, keyed by `index`. Apply these to the check and do
+          not offer bonus payment.
+        * **`SUBSCRIPTION`** — covered positions are reflected in `document.positions`.
+
+        In all cases render `cashierInformation[].text` / `customerInformation[].text`
+        verbatim — they already describe the card ("Скидочная карта клиента: 10%",
+        "Баланс клиента: 1400 …").
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PrecheckRequest'
+            example:
+              order_id: "5d4c6e8a-1111-4222-8333-444455556666"
+              order_number: "27"
+              items:
+                - id: "item-abc-001"
+                  product: { id: "prod-flat-white", code: "34", name: "ФЛЭТ УАЙТ" }
+                  price: "450.00"
+                  quantity: "2.000"
+                  sum: "900.00"
+              card:
+                track: "443a5235-7a6f-40a7-968e-07d6a4063f81"
+      responses:
+        '200':
+          description: |
+            Loyalty envelope. `code: 0` = success. A `null` body or `code != 0` means
+            "no loyalty for this order" — continue the sale normally.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrecheckResponse'
+              examples:
+                cashbackCard:
+                  summary: LOYALTY_COINS — availableAmount is spendable bonus (₽)
+                  value:
+                    code: 0
+                    error: ""
+                    client:
+                      availableAmount: "1400"
+                      mobilePhone: ""
+                      email: ""
+                      validationCode: ""
+                      validationMessage: ""
+                    validationCode: ""
+                    validationMessage: ""
+                    document:
+                      positions:
+                        - { index: 1, discountAmount: 0, paidAmount: null }
+                    cashierInformation:
+                      - { text: "Баланс клиента: 1400 \nУровень кэшбэка: 5%" }
+                    customerInformation:
+                      - { text: "Ваш баланс: 1400" }
+                    printingInformation: []
+                discountCard:
+                  summary: DISCOUNT — availableAmount 0; apply discountAmount (kopecks) per position
+                  value:
+                    code: 0
+                    error: ""
+                    client:
+                      availableAmount: 0
+                      mobilePhone: ""
+                      email: ""
+                      validationCode: ""
+                      validationMessage: ""
+                    validationCode: ""
+                    validationMessage: ""
+                    document:
+                      positions:
+                        - { index: 1, discountAmount: 9000, paidAmount: null }
+                    cashierInformation:
+                      - { text: "Скидочная карта клиента: 10% \nЗаметки о клиенте: Нет" }
+                    customerInformation:
+                      - { text: "Скидочная карта: 10%" }
+                    printingInformation: []
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /{tenant_id}/order/pay-by-bonus/:
+    post:
+      tags: [order]
+      operationId: orderPayByBonus
+      summary: DEBIT — reserve/spend bonus against the card
+      description: |
+        **Writes state.** Reserves `amount` (in RUBLES) of bonus for this order.
+        On success the configured bonus tender should carry this amount on the order.
+        If the order is abandoned afterwards, you MUST call `/order/pay-by-bonus/cancel/`.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PayByBonusRequest'
+            example:
+              order_id: "5d4c6e8a-1111-4222-8333-444455556666"
+              order_number: "27"
+              items:
+                - id: "item-abc-001"
+                  product: { id: "prod-flat-white", code: "34", name: "ФЛЭТ УАЙТ" }
+                  price: "450.00"
+                  quantity: "2.000"
+                  sum: "900.00"
+              card:
+                track: "443a5235-7a6f-40a7-968e-07d6a4063f81"
+              amount: "150.00"
+      responses:
+        '200':
+          description: Reservation succeeded. `document.positions[].paidAmount` is in **kopecks**.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PayByBonusResponse'
+              example:
+                code: 0
+                error: ""
+                client:
+                  availableAmount: "1250"
+                  mobilePhone: ""
+                  email: ""
+                  validationCode: ""
+                  validationMessage: ""
+                validationCode: ""
+                validationMessage: ""
+                document:
+                  positions:
+                    - { index: 1, discountAmount: null, paidAmount: 15000 }
+                cashierInformation:
+                  - { text: "Баланс клиента до: 1400; Новый баланс: 1250" }
+                customerInformation:
+                  - { text: "Ваш текущий баланс: 1250" }
+                printingInformation: []
+        '400':
+          description: |
+            Reservation failed — e.g. insufficient balance or an invalid card.
+            Show `message` to the cashier; do not block the sale.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkMessageResponse'
+              example:
+                ok: false
+                message: "Не удалось зарезервировать бонусы."
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /{tenant_id}/order/pay-by-bonus/cancel/:
+    post:
+      tags: [order]
+      operationId: orderCancelPayByBonus
+      summary: Release a previous bonus reservation
+      description: |
+        Call whenever the cashier removes the bonus payment, or the order is abandoned
+        after a successful `pay-by-bonus` but before `confirm`. Send the amount that was
+        previously reserved. Same request shape as `pay-by-bonus`.
+
+        **Note 1:** the success envelope has **no `document`** field (unlike precheck / pay-by-bonus).
+
+        ⚠️ **Note 2 — two possible 200 shapes.** On an internal server error this endpoint
+        returns a *reduced* envelope that omits `client`, `validationCode` and
+        `validationMessage` entirely, **and still reports `code: 0`**. So:
+
+        * Do **not** assume `client` is present — treat it as optional/absent.
+        * Do **not** rely on `code != 0` to detect this failure; `code` is `0` either way.
+        * Surface `cashierInformation[].text`, which carries the error notice.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PayByBonusRequest'
+            example:
+              order_id: "5d4c6e8a-1111-4222-8333-444455556666"
+              order_number: "27"
+              items:
+                - id: "item-abc-001"
+                  product: { id: "prod-flat-white", code: "34", name: "ФЛЭТ УАЙТ" }
+                  price: "450.00"
+                  quantity: "2.000"
+                  sum: "900.00"
+              card:
+                track: "443a5235-7a6f-40a7-968e-07d6a4063f81"
+              amount: "150.00"
+      responses:
+        '200':
+          description: |
+            Reservation released — **or** an internal error (see Note 2 above; the error
+            variant omits `client` and still reports `code: 0`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CancelPayByBonusResponse'
+              examples:
+                released:
+                  summary: Reservation released successfully
+                  value:
+                    code: 0
+                    error: ""
+                    client:
+                      availableAmount: "1400"
+                      mobilePhone: ""
+                      email: ""
+                      validationCode: ""
+                      validationMessage: ""
+                    validationCode: ""
+                    validationMessage: ""
+                    cashierInformation:
+                      - { text: "Баланс клиента до: 1250; Новый баланс: 1400" }
+                    customerInformation:
+                      - { text: "Ваш текущий баланс: 1400" }
+                    printingInformation: []
+                internalError:
+                  summary: ⚠️ Internal error — reduced shape, no `client`, still code 0
+                  value:
+                    code: 0
+                    error: ""
+                    cashierInformation:
+                      - { text: "Ошибка отмены операции. АйТи'шник уже в курсе. Баллы не начислятся, но можно закрывать чек. Сорян." }
+                    customerInformation: []
+                    printingInformation: []
+        '400':
+          description: Could not release the reservation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkMessageResponse'
+              example:
+                ok: false
+                message: "Не удалось отменить резервирование."
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /{tenant_id}/order/confirm/:
+    post:
+      tags: [order]
+      operationId: orderConfirm
+      summary: CREDIT — commit the closed receipt and earn cashback
+      description: |
+        **Writes state.** Call when the check is closed. Send **all** payment lines,
+        including the bonus tender. Cashback is credited only on the fiscal
+        (non-bonus) portion.
+
+        The server splits payments into spent-bonus vs fiscal by matching
+        `payments[].payment_type.id` against the tenant's configured bonus tender
+        GUID(s). Send iiko's native payment type id/name/kind verbatim — **no special
+        tagging is required on the client side**.
+
+        `card` is **optional**: a receipt with no loyalty card is valid and is still
+        recorded (just no cashback).
+
+        Idempotent on `order_id` — safe to retry after a network timeout.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmRequest'
+            example:
+              order_id: "5d4c6e8a-1111-4222-8333-444455556666"
+              order_number: "27"
+              items:
+                - id: "item-abc-001"
+                  product: { id: "prod-flat-white", code: "34", name: "ФЛЭТ УАЙТ" }
+                  price: "450.00"
+                  quantity: "2.000"
+                  sum: "900.00"
+              payments:
+                - id: "pay-cash-001"
+                  payment_type: { id: "cash-pt-guid", name: "Наличные", kind: "cash" }
+                  sum: "750.00"
+                - id: "pay-bonus-001"
+                  payment_type: { id: "a8b3f6e0-ec83-4a24-b080-0f02f0096f51", name: "Bonoos", kind: "external" }
+                  sum: "150.00"
+              card:
+                track: "443a5235-7a6f-40a7-968e-07d6a4063f81"
+              closed_at: "2026-07-21T12:00:00+03:00"
+              order_type: "order"
+              reference_order_id: ""
+      responses:
+        '200':
+          description: |
+            Always inspect `ok` and `duplicate`. Even when `ok` is `false`, the cashier
+            must be allowed to close the receipt.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfirmResponse'
+              examples:
+                committed:
+                  summary: Receipt committed, cashback earned
+                  value:
+                    ok: true
+                    duplicate: false
+                    fiscal_amount: 75000
+                    bonus_credit_amount: 15000
+                    bonus_debit_amount: 3750
+                    message: "Чек зарегистрирован в системе лояльности."
+                duplicate:
+                  summary: Already registered (safe retry) — no double credit
+                  value:
+                    ok: true
+                    duplicate: true
+                    message: "Чек уже зарегистрирован в системе лояльности."
+                refundNotSupported:
+                  summary: order_type = "refund" (not implemented yet)
+                  value:
+                    ok: false
+                    message: "Возврат пока не поддерживается."
+                brandMismatch:
+                  summary: Card belongs to a different brand
+                  value:
+                    ok: false
+                    message: "Карта не из этого бренда: Кофейня"
+                serverError:
+                  summary: Registration failed — do NOT block the cashier
+                  value:
+                    ok: false
+                    message: "Ошибка регистрации чека. АйТи знает, баллы не начислены, но чек можно закрывать."
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        `Authorization: Bearer <ServiceAccount token>` — the canonical scheme.
+    bonoosAuthHeader:
+      type: apiKey
+      in: header
+      name: X-Bonoos-Authorization
+      description: |
+        Fallback for the Yandex API Gateway, which strips `Authorization` on some
+        configurations. Send the **same** value including the prefix:
+        `X-Bonoos-Authorization: Bearer <ServiceAccount token>`.
+
+        The server reads `X-Bonoos-Authorization` first, then `Authorization`.
+        **Sending both headers is safe and recommended.**
+
+  parameters:
+    TenantId:
+      name: tenant_id
+      in: path
+      required: true
+      description: Bonoos Tenant UUID (one per store / terminal). Configured per terminal.
+      schema:
+        type: string
+        format: uuid
+      example: "c326e5a2-ad8b-4244-bed1-b40ea5430e3e"
+
+  responses:
+    ValidationError:
+      description: |
+        Request body failed validation. The body is a DRF field-error map:
+        field name → list of messages (nested for nested objects).
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: true
+          example:
+            card:
+              number: ["Это поле не может быть пустым."]
+    Forbidden:
+      description: |
+        Missing/invalid token, **or** unknown `tenant_id`. Both cases return 403
+        (an unknown tenant is deliberately indistinguishable from a bad token).
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              detail:
+                type: string
+          example:
+            detail: "You do not have permission to perform this action."
+
+  schemas:
+
+    Money:
+      type: string
+      description: |
+        Monetary amount in **RUBLES**, decimal. Send as a string with a dot separator
+        (a JSON number is also accepted). Never use a comma separator.
+      pattern: '^-?\d+(\.\d{1,2})?$'
+      example: "900.00"
+
+    Card:
+      type: object
+      description: |
+        Customer identifier. Send whichever the cashier captured — **at least one**
+        field should be non-empty. `track` wins if both are present.
+        Both fields accept `null`.
+
+        NOTE — the two fields resolve differently server-side:
+
+        * `track` (a **UUID**) → looks up **that exact card**, so `card_type` can be
+          `LOYALTY_COINS`, `DISCOUNT`, `SUBSCRIPTION`, …
+        * `number` (**digits only**) → looks up the *client*, then the server
+          **auto-selects their `LOYALTY_COINS` card, falling back to `DISCOUNT`**.
+
+        So the same customer may yield a different `card_type` depending on whether the
+        cashier scanned the QR or typed the number.
+      properties:
+        track:
+          type: string
+          format: uuid
+          nullable: true
+          description: |
+            Loyalty card UUID (`ClientKPass` id). The Bonoos Apple/Google Wallet QR
+            encodes this UUID directly — put the raw scanned string here.
+            Resolves to **that specific card**.
+          example: "56562dc7-c9e7-4553-8ef6-e052e3ba099f"
+        number:
+          type: string
+          nullable: true
+          pattern: '^\d+$'
+          description: |
+            **Telegram chat id** — digits only. Used for manual keypad entry when there
+            is no QR to scan. Matched against the customer's account id.
+
+            Note: the server resolves this to the client and then picks their
+            `LOYALTY_COINS` card (or `DISCOUNT` if there is no cashback card) — it never
+            returns a `SUBSCRIPTION` card via this path.
+          example: "57460843"
+
+    Product:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+          description: iiko product GUID.
+          example: "prod-flat-white"
+        code:
+          type: string
+          nullable: true
+          description: Short product code / article (iiko `IProduct.Number`).
+          example: "34"
+        name:
+          type: string
+          nullable: true
+          example: "ФЛЭТ УАЙТ"
+
+    OrderItem:
+      type: object
+      required: [product, price, quantity, sum]
+      properties:
+        id:
+          type: string
+          nullable: true
+          description: iiko order-item GUID.
+          example: "item-abc-001"
+        product:
+          $ref: '#/components/schemas/Product'
+        price:
+          allOf: [{ $ref: '#/components/schemas/Money' }]
+          description: Unit price, RUBLES.
+        quantity:
+          type: string
+          description: Decimal quantity, up to 3 decimal places.
+          pattern: '^-?\d+(\.\d{1,3})?$'
+          example: "2.000"
+        sum:
+          allOf: [{ $ref: '#/components/schemas/Money' }]
+          description: Line total, RUBLES.
+        comment:
+          type: string
+          nullable: true
+          example: ""
+
+    PaymentType:
+      type: object
+      required: [id]
+      description: |
+        Send iiko's native payment type verbatim. The server decides which line is the
+        bonus tender by matching `id` against the tenant's configured bonus GUID(s).
+      properties:
+        id:
+          type: string
+          description: iiko payment type GUID.
+          example: "cash-pt-guid"
+        name:
+          type: string
+          nullable: true
+          example: "Наличные"
+        kind:
+          type: string
+          nullable: true
+          description: |
+            iiko's native `PaymentTypeKind`, lower-cased (e.g. `cash`, `card`,
+            `external`). Note iiko has **no** `bonus` kind — classification is by `id`.
+          example: "cash"
+
+    PaymentItem:
+      type: object
+      required: [payment_type, sum]
+      properties:
+        id:
+          type: string
+          nullable: true
+          description: iiko payment GUID.
+          example: "pay-cash-001"
+        payment_type:
+          $ref: '#/components/schemas/PaymentType'
+        sum:
+          allOf: [{ $ref: '#/components/schemas/Money' }]
+          description: Amount of this payment line, RUBLES.
+
+    OrderBase:
+      type: object
+      required: [order_id, items]
+      properties:
+        order_id:
+          type: string
+          description: |
+            iiko order GUID. Must be **stable across retries** — idempotency and
+            reservation matching depend on it.
+          example: "5d4c6e8a-1111-4222-8333-444455556666"
+        order_number:
+          type: string
+          nullable: true
+          description: Human-readable order/receipt number.
+          example: "27"
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/OrderItem' }
+
+    ClientLookupRequest:
+      type: object
+      required: [card]
+      properties:
+        card: { $ref: '#/components/schemas/Card' }
+
+    PrecheckRequest:
+      allOf:
+        - $ref: '#/components/schemas/OrderBase'
+        - type: object
+          required: [card]
+          properties:
+            card: { $ref: '#/components/schemas/Card' }
+
+    PayByBonusRequest:
+      allOf:
+        - $ref: '#/components/schemas/OrderBase'
+        - type: object
+          required: [card, amount]
+          properties:
+            card: { $ref: '#/components/schemas/Card' }
+            amount:
+              allOf: [{ $ref: '#/components/schemas/Money' }]
+              description: |
+                Bonus amount to reserve / release, in **RUBLES**.
+                Also used by `/order/pay-by-bonus/cancel/` (send the reserved amount).
+
+    ConfirmRequest:
+      allOf:
+        - $ref: '#/components/schemas/OrderBase'
+        - type: object
+          required: [payments, closed_at]
+          properties:
+            payments:
+              type: array
+              description: All payment lines, **including** the bonus tender.
+              items: { $ref: '#/components/schemas/PaymentItem' }
+            card:
+              allOf: [{ $ref: '#/components/schemas/Card' }]
+              nullable: true
+              description: Optional — omit or send `null` for a receipt with no loyalty card.
+            closed_at:
+              type: string
+              format: date-time
+              description: |
+                Receipt close time, ISO-8601 **with timezone offset** (cashier station's
+                local tz). Required.
+              example: "2026-07-21T12:00:00+03:00"
+            order_type:
+              type: string
+              enum: [order, refund]
+              default: order
+              description: |
+                `order` = sale. `refund` is accepted but **not implemented server-side yet** —
+                it returns `{"ok": false, "message": "Возврат пока не поддерживается."}`.
+            reference_order_id:
+              type: string
+              nullable: true
+              description: For refunds — the original confirmed `order_id`. Empty for sales.
+              example: ""
+
+    ClientLookupResponse:
+      type: object
+      required: [found]
+      properties:
+        found:
+          type: boolean
+        message:
+          type: string
+          description: Present when `found` is `false`.
+          example: "Клиент не найден."
+        card_id:
+          type: string
+          example: "443a5235-7a6f-40a7-968e-07d6a4063f81"
+        client_profile_id:
+          type: string
+          example: "9df2bf17-52f8-4d9c-9e5e-dcb644280ae5"
+        username:
+          type: string
+        first_name:
+          type: string
+        last_name:
+          type: string
+        balance_kopecks:
+          type: integer
+          nullable: true
+          description: |
+            Spendable bonus balance in **KOPECKS**, brand-wide (summed across all the
+            customer's cards in the brand). `140015` = 1400.15 ₽.
+          example: 140015
+        balance_display:
+          type: string
+          description: Human-readable balance for the cashier/customer display.
+          example: "1400"
+        cashback_percent:
+          type: integer
+          nullable: true
+          description: |
+            Customer's current cashback level, in percent.
+            Only meaningful when `card_type` is `LOYALTY_COINS`.
+          example: 5
+        card_type:
+          type: string
+          nullable: true
+          enum: [LOYALTY_COINS, DISCOUNT, SUBSCRIPTION, LOYALTY_STAMPS, GIFT_CARD]
+          description: |
+            Kind of card that was scanned — **branch on this**:
+
+            * `LOYALTY_COINS` — cashback card. Use `balance_kopecks` / `cashback_percent`;
+              bonus spending (`/order/pay-by-bonus/`) is available.
+            * `DISCOUNT` — discount card. Use `discount_percent`; **do not** offer bonus
+              spending. `/order/precheck/` returns the per-position `discountAmount`
+              (in kopecks) to apply to the check.
+            * `SUBSCRIPTION` — subscription card; precheck returns the covered positions.
+            * Other values exist but are not part of the iiko flow yet.
+          example: "LOYALTY_COINS"
+        discount_percent:
+          type: integer
+          nullable: true
+          description: |
+            Percent off the check. Non-null **only** when `card_type` is `DISCOUNT`;
+            `null` for every other card type.
+          example: 10
+
+    LoyaltyClient:
+      type: object
+      properties:
+        availableAmount:
+          oneOf:
+            - type: string
+            - type: number
+          description: |
+            Spendable bonus, **display value in RUBLES** (not kopecks).
+
+            ⚠️ **The JSON type is inconsistent — parse defensively:**
+
+            * `LOYALTY_COINS` card → a **string**, e.g. `"128643"`
+            * `DISCOUNT` / `SUBSCRIPTION` card → the **number** `0`
+
+            Do not bind this to a strict numeric type. For an exact, reliably-typed
+            integer use `/client/lookup`'s `balance_kopecks` (kopecks, integer) instead —
+            that is the recommended source for capping the bonus payment amount.
+          example: "128643"
+        mobilePhone:
+          type: string
+          nullable: true
+        email:
+          type: string
+          nullable: true
+        validationCode:
+          type: string
+          nullable: true
+        validationMessage:
+          type: string
+          nullable: true
+
+    Position:
+      type: object
+      properties:
+        index:
+          type: integer
+          description: 1-based position index within the order.
+          example: 1
+        discountAmount:
+          type: number
+          nullable: true
+          description: |
+            Discount for this position, in **KOPECKS** (precheck only). Populated for a
+            `DISCOUNT` card (computed as `line_total * discount_percent / 100`); `0` for a
+            cashback card. Apply it to the matching position by `index`.
+          example: 9000
+        paidAmount:
+          type: number
+          nullable: true
+          description: Bonus applied to this position, in **KOPECKS** (pay-by-bonus).
+          example: 15000
+
+    Document:
+      type: object
+      description: Per-position amounts. `null` means no per-position discounts.
+      nullable: true
+      properties:
+        positions:
+          type: array
+          items: { $ref: '#/components/schemas/Position' }
+
+    InformationLine:
+      type: object
+      properties:
+        text:
+          type: string
+          description: Pre-localized Russian text — render verbatim.
+      example:
+        text: "Ваш баланс: 1400"
+
+    LoyaltyEnvelope:
+      type: object
+      description: Common loyalty response envelope.
+      required: [code]
+      properties:
+        code:
+          type: integer
+          description: '`0` = success. Any non-zero value means "no loyalty for this order".'
+          example: 0
+        error:
+          type: string
+          nullable: true
+          example: ""
+        client:
+          allOf: [{ $ref: '#/components/schemas/LoyaltyClient' }]
+          nullable: true
+        validationCode:
+          type: string
+          nullable: true
+        validationMessage:
+          type: string
+          nullable: true
+        cashierInformation:
+          type: array
+          description: Render on the cashier screen.
+          items: { $ref: '#/components/schemas/InformationLine' }
+        customerInformation:
+          type: array
+          description: Render on the customer-facing display.
+          items: { $ref: '#/components/schemas/InformationLine' }
+        printingInformation:
+          type: array
+          description: Lines to print on the receipt (usually empty).
+          items: { $ref: '#/components/schemas/InformationLine' }
+
+    PrecheckResponse:
+      allOf:
+        - $ref: '#/components/schemas/LoyaltyEnvelope'
+        - type: object
+          properties:
+            document: { $ref: '#/components/schemas/Document' }
+
+    PayByBonusResponse:
+      allOf:
+        - $ref: '#/components/schemas/LoyaltyEnvelope'
+        - type: object
+          properties:
+            document: { $ref: '#/components/schemas/Document' }
+
+    CancelPayByBonusResponse:
+      allOf:
+        - $ref: '#/components/schemas/LoyaltyEnvelope'
+      description: |
+        Same envelope as precheck / pay-by-bonus but **without** a `document` field.
+
+        ⚠️ Two shapes are possible on 200:
+
+        * **Success** — full envelope including `client`.
+        * **Internal error** — a reduced envelope containing only `code`, `error`,
+          `cashierInformation`, `customerInformation`, `printingInformation`.
+          `client`, `validationCode` and `validationMessage` are **absent entirely**
+          (not null — the keys are missing), and `code` is still `0`.
+
+        Model `client` as optional/nullable and never dereference it unchecked.
+
+    ConfirmResponse:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+          description: |
+            `false` means cashback was not credited. **Still let the cashier close the
+            receipt** — show `message`.
+        duplicate:
+          type: boolean
+          description: |
+            `true` = this `order_id` was already confirmed. Safe: nothing was
+            double-credited. Absent on failures.
+        fiscal_amount:
+          type: integer
+          description: Sum of non-bonus (cash/card) payments, in **KOPECKS**.
+          example: 75000
+        bonus_credit_amount:
+          type: integer
+          description: |
+            ⚠️ Bonuses **SPENT** by the customer (debited from the card), in KOPECKS.
+            («Сумма потраченных бонусов»)
+          example: 15000
+        bonus_debit_amount:
+          type: integer
+          description: |
+            ⚠️ Cashback **EARNED** by the customer (credited to the card), in KOPECKS.
+            («Сумма начисленных бонусов»)
+          example: 3750
+        message:
+          type: string
+          description: Russian text to show the cashier.
+          example: "Чек зарегистрирован в системе лояльности."
+
+    OkMessageResponse:
+      type: object
+      description: Simple failure envelope used by the 400 responses.
+      required: [ok, message]
+      properties:
+        ok:
+          type: boolean
+          example: false
+        message:
+          type: string
+          example: "Не удалось зарезервировать бонусы."

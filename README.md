@@ -1,36 +1,42 @@
 # Bonoos iikoFront Loyalty Plugin
 
-A .NET Framework plugin for **iikoFront (RMS 9 / Resto.Front.Api V9)** that connects an
-iiko POS terminal to the **Bonoos** loyalty backend: balance lookup, bonus spend
-(as a registered external payment system), and cashback accrual on receipt close.
+Плагин **.NET Framework (net472)** для **iikoFront / Resto.Front.Api V9**: лояльность Bonoos на кассе — lookup гостя, скидка или списание бонусов, precheck/confirm.
 
-This is a Windows-only build (full .NET Framework, references the proprietary iiko SDK),
-kept in its own repository. The Bonoos backend lives separately.
+Бэкенд Bonoos — отдельный репозиторий. Этот репозиторий — только клиент кассы.
 
-## Layout
+## Документация
+
+| Документ | Содержание |
+|----------|------------|
+| **[HOW_IT_WORKS.md](HOW_IT_WORKS.md)** | Как работает плагин целиком (потоки, скидка, оплата, демо-срок) |
+| [PLUGIN_SPEC.md](PLUGIN_SPEC.md) | Контракт REST API |
+| [openapi.yaml](openapi.yaml) | OpenAPI |
+| [README_ON_VM.md](README_ON_VM.md) | Сборка и деплой на Windows VM |
+| [SDK_BINDING.md](SDK_BINDING.md) | Привязка к SDK V9 |
+
+## Структура
 
 ```
-Bonoos.iikoFront.LoyaltyPlugin.csproj   VS project (repo root)
-Plugin.cs                                SDK seam #1 — registers the payment system, observes order events
-Services/BonoosPaymentProcessor.cs       SDK seam #2 — IExternalPaymentProcessor (Pay / Cancel / Refund)
-Services/BonoosApiClient.cs              HTTP client for the Bonoos API      ┐
-Services/OrderTracker.cs                 per-order state + orchestration      │ SDK-free core
-Services/ConfigLoader.cs                 reads the JSON sidecar config        │ (compiles anywhere)
-Models/*.cs                              API DTOs + config                    ┘
-Bonoos.LoyaltyPlugin.config.json         runtime config (fill in per terminal)
-plugin.config                            iiko plugin manifest
-iikoFrontSDK/  (gitignored)              you drop Resto.Front.Api.dll + Newtonsoft.Json.dll here
+Plugin.cs                          Точка входа, события заказа
+Services/BonoosPaymentProcessor.cs Внешняя ПС Bonoos
+Services/BonoosApiClient.cs        HTTP
+Services/OrderTracker.cs           Состояние по заказу
+Services/DiscountService.cs        Скидка «свободная сумма»
+Services/BonoosUiManager.cs        Кнопка «Гость»
+Services/DemoLicense.cs            Демо до 25.07.2026
+Models/                            DTO + конфиг
+Manifest.xml                       Манифест плагина
 ```
 
-## Docs
+Конфиг runtime: `%AppData%\iiko\CashServer\PluginConfigs\Bonoos\Bonoos.LoyaltyPlugin.config.json`  
+(создаётся при первом запуске).
 
-- **[README_ON_VM.md](README_ON_VM.md)** — how to build on the Windows VM (toolchain, SDK refs, iikoOffice setup, deploy, configure).
-- **[SDK_BINDING.md](SDK_BINDING.md)** — the checklist of SDK seams to bind against your V9 SDK.
-- **[PLUGIN_SPEC.md](PLUGIN_SPEC.md)** — the Bonoos API contract the plugin speaks. Source of truth lives in the backend repo (`integrations/partners/iiko/`); this is a copy for self-contained reference.
+Папка `tools/` в git не входит.
 
-## Quick start (on the VM)
+## Быстрый старт
 
-1. Install VS with the **.NET desktop development** workload + a .NET Framework targeting pack (the project targets **v4.8**).
-2. Create `iikoFrontSDK/` at the repo root; copy `Resto.Front.Api.dll` and `Newtonsoft.Json.dll` from the iikoFront install into it.
-3. Bind the SDK seams in `Plugin.cs` and `Services/BonoosPaymentProcessor.cs` (see `SDK_BINDING.md`).
-4. Build; deploy the DLL + `plugin.config` + `Bonoos.LoyaltyPlugin.config.json` to iikoFront's `Plugins` folder.
+1. VS / Rider, workload .NET desktop, target **net472**.
+2. NuGet: `Resto.Front.Api.V9` (уже в `.csproj`).
+3. Build → DLL + `Manifest.xml` в Plugins iikoFront.
+4. Настроить тип оплаты Bonoos и скидку «Свободная сумма» в iikoOffice.
+5. Подробности — [HOW_IT_WORKS.md](HOW_IT_WORKS.md) и [README_ON_VM.md](README_ON_VM.md).

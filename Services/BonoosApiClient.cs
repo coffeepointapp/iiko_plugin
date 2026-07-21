@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Net.Http;
 using System.Text;
 using System.Threading.Tasks;
@@ -7,10 +8,18 @@ using Bonoos.iikoFront.LoyaltyPlugin.Models;
 
 namespace Bonoos.iikoFront.LoyaltyPlugin.Services
 {
+    /// <summary>
+    /// HTTP-клиент Bonoos API. Логи как Irbis/Sagi:
+    /// >>> REQUEST POST url + body
+    /// <<< RESPONSE HTTP status + body + ms
+    /// + запись в Bonoos_loyalty_audit.json
+    /// </summary>
     public class BonoosApiClient : IDisposable
     {
         private readonly HttpClient _httpClient;
         private readonly string _baseUrl;
+        private readonly Action<string> _log;
+        private readonly int _bodyLogLimit;
 
         /// <summary>
         /// Raised when a request fails (timeout, network error, or non-2xx). Args:
@@ -19,13 +28,15 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
         /// </summary>
         public event Action<string, string> OnRequestFailed;
 
-        public BonoosApiClient(PluginConfiguration config)
+        public BonoosApiClient(PluginConfiguration config, Action<string> log = null)
         {
             if (string.IsNullOrWhiteSpace(config.TenantId))
                 throw new ArgumentException("TenantId is required");
             if (string.IsNullOrWhiteSpace(config.ServiceAccountToken))
                 throw new ArgumentException("ServiceAccountToken is required");
 
+            _log = log ?? (_ => { });
+            _bodyLogLimit = config.FullLogs ? 16000 : 4000;
             _baseUrl = $"{config.BaseUrl.TrimEnd('/')}/{config.TenantId}/";
 
             _httpClient = new HttpClient
@@ -38,11 +49,10 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
             _httpClient.DefaultRequestHeaders.TryAddWithoutValidation("X-Bonoos-Authorization", authValue);
         }
 
-        // Omit null properties so we send e.g. {"card":{"track":"<uuid>"}} rather than
-        // {"card":{"track":"<uuid>","number":null}} — the backend rejects an explicit null.
         private static readonly JsonSerializerSettings JsonSettings = new JsonSerializerSettings
         {
             NullValueHandling = NullValueHandling.Ignore,
+            Formatting = Formatting.None,
         };
 
         private async Task<T> PostAsync<T>(string relativePath, object body)
@@ -50,7 +60,13 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
             var json = JsonConvert.SerializeObject(body, JsonSettings);
             var content = new StringContent(json, Encoding.UTF8, "application/json");
             var url = $"{_baseUrl}{relativePath}/";
+            var tag = $"Bonoos: [API] {relativePath}";
+            TryExtractOrder(body, out var orderId, out var orderNumber);
 
+            _log($"{tag} >>> REQUEST POST {url}");
+            _log($"{tag} >>> BODY {TruncateForLog(json, _bodyLogLimit)}");
+
+            var sw = Stopwatch.StartNew();
             HttpResponseMessage response;
             try
             {
@@ -58,37 +74,47 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
             }
             catch (TaskCanceledException)
             {
-                // Timeout — treat as "no loyalty result", never block the sale.
-                OnRequestFailed?.Invoke(
-                    "Система лояльности не отвечает.",
-                    $"timeout POST {url}");
+                sw.Stop();
+                var detail = $"{tag} <<< TIMEOUT after {sw.ElapsedMilliseconds}ms POST {url}";
+                _log(detail);
+                ApiAuditStore.Record(relativePath, "POST", url, json, null, null, sw.ElapsedMilliseconds,
+                    false, "timeout", orderId, orderNumber);
+                OnRequestFailed?.Invoke("Система лояльности не отвечает.", detail);
                 return default;
             }
             catch (HttpRequestException ex)
             {
-                // Network/DNS/TLS failure — same handling.
-                OnRequestFailed?.Invoke(
-                    "Нет связи с системой лояльности.",
-                    $"network error POST {url}: {ex.Message}");
+                sw.Stop();
+                var detail = $"{tag} <<< NETWORK ERROR after {sw.ElapsedMilliseconds}ms POST {url}: {ex.Message}";
+                _log(detail);
+                ApiAuditStore.Record(relativePath, "POST", url, json, null, null, sw.ElapsedMilliseconds,
+                    false, ex.Message, orderId, orderNumber);
+                OnRequestFailed?.Invoke("Нет связи с системой лояльности.", detail);
                 return default;
             }
 
             var responseBody = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            sw.Stop();
+            var status = (int)response.StatusCode;
 
-            if (!response.IsSuccessStatusCode)
+            _log($"{tag} <<< RESPONSE HTTP {status} {sw.ElapsedMilliseconds}ms");
+            _log($"{tag} <<< BODY {TruncateForLog(responseBody, _bodyLogLimit)}");
+
+            var ok = response.IsSuccessStatusCode;
+            ApiAuditStore.Record(relativePath, "POST", url, json, status, responseBody, sw.ElapsedMilliseconds,
+                ok, ok ? null : $"HTTP {status}", orderId, orderNumber);
+
+            if (!ok)
             {
-                var code = (int)response.StatusCode;
-                // Short snippet only — an error body may be a large HTML page (e.g. a 404).
-                var snippet = (responseBody ?? string.Empty).Trim();
-                if (snippet.Length > 300) snippet = snippet.Substring(0, 300) + "…";
                 OnRequestFailed?.Invoke(
-                    $"Ошибка системы лояльности ({code}).",
-                    $"HTTP {code} POST {url} body: {snippet}");
+                    $"Ошибка системы лояльности ({status}).",
+                    $"{tag} HTTP {status} POST {url}");
                 return default;
             }
 
             if (string.IsNullOrWhiteSpace(responseBody))
             {
+                _log($"{tag} <<< empty body");
                 return default;
             }
 
@@ -98,11 +124,31 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
             }
             catch (JsonException ex)
             {
-                OnRequestFailed?.Invoke(
-                    "Некорректный ответ системы лояльности.",
-                    $"bad JSON POST {url}: {ex.Message}");
+                var detail = $"{tag} <<< bad JSON: {ex.Message}";
+                _log(detail);
+                OnRequestFailed?.Invoke("Некорректный ответ системы лояльности.", detail);
                 return default;
             }
+        }
+
+        private static void TryExtractOrder(object body, out string orderId, out string orderNumber)
+        {
+            orderId = null;
+            orderNumber = null;
+            if (body is OrderRequestBase o)
+            {
+                orderId = o.OrderId;
+                orderNumber = o.OrderNumber;
+            }
+        }
+
+        private static string TruncateForLog(string text, int maxLen)
+        {
+            if (string.IsNullOrEmpty(text))
+                return "(empty)";
+
+            text = text.Replace("\r", " ").Replace("\n", " ").Trim();
+            return text.Length <= maxLen ? text : text.Substring(0, maxLen) + "…";
         }
 
         public async Task<ClientLookupResponse> LookupClientAsync(CardInfo card)
