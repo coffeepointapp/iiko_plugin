@@ -62,11 +62,10 @@ proprietary SDK. This cannot be built or run on macOS/Linux.
 4. Deploy the DLL into iikoFront's plugins directory (per the SDK sample layout).
 5. Start iikoFront; **attach the debugger to the running `iikoFront.exe`** to step through lifecycle events.
 
-> ⚠️ The exact Resto.Front.Api **type and method names** for subscribing to order
-> events, reading the order, adding a bonus payment, and rendering cashier UI must be
-> taken from the **Resto.Front.Api V9 SDK / official plugin samples present on this
-> machine**. Treat any API names in this doc as *indicative of intent*, not verbatim
-> signatures — confirm them against the SDK.
+> ✅ The load-bearing Resto.Front.Api **type and method names** (payment mapping, order
+> events, payment-system registration, cashier UI) have been **verified against the real
+> `Resto.Front.Api.V9` 9.5.6059 assembly** — see **§11**. Any other API names in this doc
+> are still *indicative of intent*; confirm those against the SDK on the build machine.
 
 ---
 
@@ -461,3 +460,49 @@ Target only `config_version == 2` / TenantBrand tenants (the brand-aware loyalty
 | `/order/pay-by-bonus/` | POST | pay w/ bonus | **yes (reserve)** | items + `amount` (₽) | `document.positions[].paidAmount` (kopecks) |
 | `/order/pay-by-bonus/cancel/` | POST | bonus removed / abandon | yes (release) | items + `amount` (₽) | envelope `code`/`error` |
 | `/order/confirm/` | POST | check closed | **yes (commit)** | items + payments (₽) | `ok`, `duplicate`, `fiscal_amount`, `bonus_debit_amount` (earned) |
+
+---
+
+## 11. Verified Resto.Front.Api V9 SDK type map
+
+Confirmed against the real **`Resto.Front.Api.V9` 9.5.6059** assembly metadata (2026-07-21).
+These are the **verbatim** member names — the ones the plugin actually compiles against.
+
+**Toolchain (verified from the plugin `.csproj`):** SDK-style project, `TargetFramework net472`,
+`LangVersion 10.0`, NuGet `PackageReference Resto.Front.Api.V9 9.5.6059` + `Newtonsoft.Json 13.0.4`.
+(No local iikoFront-install DLL references; the SDK comes from NuGet.)
+
+### Payments — `IPaymentItem` → confirm `payments[]`
+`order.Payments` yields `IPaymentItem` (namespace `Resto.Front.Api.Data.Payments`):
+
+| Member | Type | Maps to wire field |
+|---|---|---|
+| `p.Id` | `Guid` (via `IEntity`) | `payments[].id` |
+| `p.Type` | **`IPaymentType`** — *not* `.PaymentType` | `payments[].payment_type` |
+| `p.Type.Id` | `Guid` (via `IEntity`) | `payment_type.id` ← **the id the backend matches** |
+| `p.Type.Name` | `string` | `payment_type.name` |
+| `p.Type.Kind` | enum `PaymentTypeKind` | `payment_type.kind` |
+| `p.Sum` | `decimal` (rubles) | `payments[].sum` |
+
+`PaymentTypeKind` members: `Cash, Card, Credit, External, Sberbank, SmartSale, Trpos, Unknown, Voucher, Writeoff`.
+**There is no `Bonus` kind** — that's why the backend classifies the bonus tender by
+`payment_type.id` against `Tenant.iiko_bonus_payment_type_id` (§6.5), never by kind.
+
+### Order & items — `IOrder` / `IOrderProductItem` / `IProduct`
+- `IOrder`: `.Id` (Guid), `.Number`, `.Status` (`OrderStatus.Closed` gates the confirm), `.Items`, `.Payments`.
+- Line items: filter `order.Items.OfType<IOrderProductItem>()` — `.Id`, `.Product`, `.Price` (decimal ₽), `.Amount` (decimal qty).
+- `IProduct`: `.Id` (Guid), `.Number` (article/SKU → wire `product.code`), `.Name`. (There is **no** `IProduct.Code`.)
+
+### Order-event observation — `PluginContext.Notifications` (`INotificationService`)
+- `OrderChanged` → **`IObservable<EntityChangedEventArgs<IOrder>>`**, exposing only the BCL
+  `Subscribe(IObserver<T>)`. There is no Rx `Subscribe(Action<T>)` in scope — wrap the handler
+  in a tiny `IObserver<T>` adapter (avoid taking a `System.Reactive` dependency in a host-loaded DLL).
+  `EntityChangedEventArgs<T>` is a **value type**: read `e.Entity` (never `e?.Entity`); it also has `.EventType`.
+- `OrderEditCardSlided` → `Subscribe(Func<(CardInputDialogResult card, IOrder order, IOperationService os, IViewManager vm), bool>)`.
+  `CardInputDialogResult.FullCardTrack` carries the swiped track. Return `true` = handled.
+- `OrderEditBarcodeScanned` → `Subscribe(Func<(string barcode, IOrder order, IOperationService os, IViewManager vm), bool>)`.
+  The scanned code is a **raw `string`** (not a `BarcodeInputDialogResult`).
+
+### Operations — `PluginContext.Operations` (`IOperationService`)
+- `RegisterPaymentSystem(IPaymentProcessor processor, bool /*…*/, FiscalPaymentTypeGroup)` — returns `IDisposable` (dispose to unregister).
+- `AddNotificationMessage(string message, string title, TimeSpan? /*optional*/)` — non-modal cashier toast.

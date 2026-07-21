@@ -40,6 +40,13 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
         private readonly ConcurrentDictionary<string, OrderLoyaltyState> _orders =
             new ConcurrentDictionary<string, OrderLoyaltyState>();
 
+        // Order ids we've already fired confirm for. Guards against the SDK raising
+        // several Closed events for one order (the backend also dedups on order_id;
+        // this just avoids the redundant POSTs). Tiny GUID keys; lives for the
+        // plugin's lifetime, which is fine for a cashier session.
+        private readonly ConcurrentDictionary<string, byte> _confirmSent =
+            new ConcurrentDictionary<string, byte>();
+
         public event Action<string, string> OnCashierNotification;
         public event Action<string, string> OnCustomerNotification;
 
@@ -197,6 +204,16 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
         {
             if (orderId != null)
                 _orders.TryRemove(orderId, out _);
+        }
+
+        /// <summary>
+        /// Returns true exactly once per order id. Lets OnOrderChanged send confirm
+        /// for a closed receipt at most once, even if the SDK raises several Closed
+        /// events for the same order.
+        /// </summary>
+        public bool TryMarkConfirmSent(string orderId)
+        {
+            return orderId != null && _confirmSent.TryAdd(orderId, 0);
         }
 
         /// <summary>

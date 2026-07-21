@@ -50,6 +50,13 @@ namespace Bonoos.iikoFront.LoyaltyPlugin
                 }
 
                 _apiClient = new BonoosApiClient(_config);
+                // Surface backend failures (404/500/timeout/network) to the cashier +
+                // log the detail — otherwise a non-2xx is swallowed and the scan looks dead.
+                _apiClient.OnRequestFailed += (userMsg, detail) =>
+                {
+                    Log($"Bonoos: request failed — {detail}");
+                    ShowCashier(userMsg);
+                };
                 _orderTracker = new OrderTracker(_apiClient);
                 // Surface lookup/precheck messages (e.g. "Баланс: 200, кэшбэк 5%") to the cashier.
                 _orderTracker.OnCashierNotification += (_, text) => ShowCashier(text);
@@ -101,6 +108,7 @@ namespace Bonoos.iikoFront.LoyaltyPlugin
         // so cashback accrues on close even without the Bonoos tender being used.
         private bool OnCardSlided((CardInputDialogResult card, IOrder order, IOperationService os, IViewManager vm) args)
         {
+            Log($"Bonoos: OrderEditCardSlided fired — track='{args.card?.FullCardTrack}' order={args.order?.Id}");
             var track = args.card?.FullCardTrack;
             if (string.IsNullOrWhiteSpace(track) || args.order == null)
                 return false;   // nothing we can use — let other handlers process the swipe
@@ -116,11 +124,15 @@ namespace Bonoos.iikoFront.LoyaltyPlugin
         // The SDK delivers the scanned code as a raw string in the tuple's first slot.
         private bool OnBarcodeScanned((string barcode, IOrder order, IOperationService os, IViewManager vm) args)
         {
+            Log($"Bonoos: OrderEditBarcodeScanned fired — raw='{args.barcode}' order={args.order?.Id}");
             var code = args.barcode?.Trim();
             if (string.IsNullOrEmpty(code) || args.order == null)
                 return false;
             if (!Guid.TryParse(code, out _))
+            {
+                Log($"Bonoos: scan '{code}' is not a bare GUID — passing through to iiko as a product barcode");
                 return false;   // not a Bonoos loyalty QR — let iiko treat it as a product barcode
+            }
             var oid = args.order.Id.ToString();
             FireAndForget(_orderTracker.LookupClientAsync(
                 oid, args.order.Number.ToString(), new CardInfo { Track = code }));
@@ -134,11 +146,16 @@ namespace Bonoos.iikoFront.LoyaltyPlugin
             if (order == null || order.Status != OrderStatus.Closed)
                 return;
             var oid = order.Id.ToString();
-            if (!_orderTracker.TryGetOrder(oid, out var state))
-                return;          // no loyalty interaction on this order — nothing to confirm
+            // Send EVERY closed receipt to the backend — not only carded ones. The
+            // backend records all receipts (cashback only when a card is attached),
+            // so a cardless sale still lands as an IikoFiscalReceipt. Dedup here so
+            // repeated Closed events for one order don't re-POST (backend dedups too).
+            if (!_orderTracker.TryMarkConfirmSent(oid))
+                return;
+            var card = _orderTracker.TryGetOrder(oid, out var state) ? state.Card : null;
             RunSync(_orderTracker.ConfirmAsync(
                 oid, order.Number.ToString(), SdkMap.Items(order), SdkMap.Payments(order),
-                state.Card, DateTimeOffset.Now.ToString("O")));
+                card, DateTimeOffset.Now.ToString("O")));
             _orderTracker.RemoveOrder(oid);
         }
 

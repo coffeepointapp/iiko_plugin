@@ -12,6 +12,13 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
         private readonly HttpClient _httpClient;
         private readonly string _baseUrl;
 
+        /// <summary>
+        /// Raised when a request fails (timeout, network error, or non-2xx). Args:
+        /// (short cashier-facing message, detailed log line). Never blocks the sale —
+        /// callers still get <c>default</c> back — but the failure is no longer silent.
+        /// </summary>
+        public event Action<string, string> OnRequestFailed;
+
         public BonoosApiClient(PluginConfiguration config)
         {
             if (string.IsNullOrWhiteSpace(config.TenantId))
@@ -31,9 +38,16 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
             _httpClient.DefaultRequestHeaders.TryAddWithoutValidation("X-Bonoos-Authorization", authValue);
         }
 
+        // Omit null properties so we send e.g. {"card":{"track":"<uuid>"}} rather than
+        // {"card":{"track":"<uuid>","number":null}} — the backend rejects an explicit null.
+        private static readonly JsonSerializerSettings JsonSettings = new JsonSerializerSettings
+        {
+            NullValueHandling = NullValueHandling.Ignore,
+        };
+
         private async Task<T> PostAsync<T>(string relativePath, object body)
         {
-            var json = JsonConvert.SerializeObject(body);
+            var json = JsonConvert.SerializeObject(body, JsonSettings);
             var content = new StringContent(json, Encoding.UTF8, "application/json");
             var url = $"{_baseUrl}{relativePath}/";
 
@@ -45,11 +59,17 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
             catch (TaskCanceledException)
             {
                 // Timeout — treat as "no loyalty result", never block the sale.
+                OnRequestFailed?.Invoke(
+                    "Система лояльности не отвечает.",
+                    $"timeout POST {url}");
                 return default;
             }
-            catch (HttpRequestException)
+            catch (HttpRequestException ex)
             {
                 // Network/DNS/TLS failure — same handling.
+                OnRequestFailed?.Invoke(
+                    "Нет связи с системой лояльности.",
+                    $"network error POST {url}: {ex.Message}");
                 return default;
             }
 
@@ -57,6 +77,13 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
 
             if (!response.IsSuccessStatusCode)
             {
+                var code = (int)response.StatusCode;
+                // Short snippet only — an error body may be a large HTML page (e.g. a 404).
+                var snippet = (responseBody ?? string.Empty).Trim();
+                if (snippet.Length > 300) snippet = snippet.Substring(0, 300) + "…";
+                OnRequestFailed?.Invoke(
+                    $"Ошибка системы лояльности ({code}).",
+                    $"HTTP {code} POST {url} body: {snippet}");
                 return default;
             }
 
@@ -69,8 +96,11 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
             {
                 return JsonConvert.DeserializeObject<T>(responseBody);
             }
-            catch (JsonException)
+            catch (JsonException ex)
             {
+                OnRequestFailed?.Invoke(
+                    "Некорректный ответ системы лояльности.",
+                    $"bad JSON POST {url}: {ex.Message}");
                 return default;
             }
         }
