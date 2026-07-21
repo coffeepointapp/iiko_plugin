@@ -43,11 +43,12 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
                 Id = p.Id.ToString(),
                 PaymentType = new PaymentTypeInfo
                 {
-                    Id = p.PaymentType.Id.ToString(),
-                    Name = p.PaymentType.Name,
+                    // IPaymentItem exposes the tender as .Type (an IPaymentType), not .PaymentType.
+                    Id = p.Type.Id.ToString(),
+                    Name = p.Type.Name,
                     // Backend classifies the bonus tender by payment_type.id (tenant config),
                     // so we just relay iiko's native kind.
-                    Kind = p.PaymentType.Kind.ToString().ToLowerInvariant(),
+                    Kind = p.Type.Kind.ToString().ToLowerInvariant(),
                 },
                 Sum = Money(p.Sum),
             }).ToList();

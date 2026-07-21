@@ -62,7 +62,11 @@ namespace Bonoos.iikoFront.LoyaltyPlugin
                 //  - order closed → confirm (cashback accrual). V9 has no OrderClosed event,
                 //    so we filter OrderChanged by Status == Closed.
                 //  - card swiped while editing the order → bind + lookup (accrual-only flow).
-                _orderChangedSub = PluginContext.Notifications.OrderChanged.Subscribe(OnOrderChanged);
+                // OrderChanged is a plain IObservable<T> (only Subscribe(IObserver<T>)),
+                // so wrap the handler in our IObserver adapter. OrderEditCardSlided /
+                // OrderEditBarcodeScanned below use the SDK's Func-based Subscribe instead.
+                _orderChangedSub = PluginContext.Notifications.OrderChanged.Subscribe(
+                    new ActionObserver<EntityChangedEventArgs<IOrder>>(OnOrderChanged));
                 _cardSlidedSub = PluginContext.Notifications.OrderEditCardSlided.Subscribe(OnCardSlided);
                 _barcodeSub = PluginContext.Notifications.OrderEditBarcodeScanned.Subscribe(OnBarcodeScanned);
 
@@ -109,11 +113,10 @@ namespace Bonoos.iikoFront.LoyaltyPlugin
         // Cashier scanned a QR/barcode with the POS scanner while editing the order.
         // The Bonoos loyalty QR encodes a ClientKPass UUID — only consume UUID-shaped
         // scans (return true), so product barcodes still reach iiko (return false).
-        // ⚠ Verify the OrderEditBarcodeScanned tuple element type — inferred as
-        //   BarcodeInputDialogResult (with .Barcode); adjust if the SDK uses a string.
-        private bool OnBarcodeScanned((BarcodeInputDialogResult barcode, IOrder order, IOperationService os, IViewManager vm) args)
+        // The SDK delivers the scanned code as a raw string in the tuple's first slot.
+        private bool OnBarcodeScanned((string barcode, IOrder order, IOperationService os, IViewManager vm) args)
         {
-            var code = args.barcode?.Barcode?.Trim();
+            var code = args.barcode?.Trim();
             if (string.IsNullOrEmpty(code) || args.order == null)
                 return false;
             if (!Guid.TryParse(code, out _))
@@ -127,7 +130,7 @@ namespace Bonoos.iikoFront.LoyaltyPlugin
         // Order closed → commit the receipt so cashback accrues on the fiscal portion.
         private void OnOrderChanged(EntityChangedEventArgs<IOrder> e)
         {
-            var order = e?.Entity;
+            var order = e.Entity;   // EntityChangedEventArgs<IOrder> is a value type — no ?.
             if (order == null || order.Status != OrderStatus.Closed)
                 return;
             var oid = order.Id.ToString();

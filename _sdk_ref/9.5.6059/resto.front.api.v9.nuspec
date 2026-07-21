@@ -1,0 +1,20 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2012/06/nuspec.xsd">
+  <metadata>
+    <id>Resto.Front.Api.V9</id>
+    <version>9.5.6059</version>
+    <title>iikoFront Api - Main Interfaces Library</title>
+    <authors>iiko</authors>
+    <owners></owners>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <icon>logo.png</icon>
+    <projectUrl>https://iiko.github.io/front.api.doc/</projectUrl>
+    <iconUrl>https://iiko.github.io/front.api.doc/logo.png</iconUrl>
+    <description>This library allows you to develop plugins to extend functionality and change behaviour of the iikoFront application.</description>
+    <releaseNotes>This is the release version for Resto.Front.Api.V9</releaseNotes>
+    <tags>iiko front api plugin</tags>
+    <dependencies>
+      <group targetFramework=".NETStandard2.0" />
+    </dependencies>
+  </metadata>
+</package>
