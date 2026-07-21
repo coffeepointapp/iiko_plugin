@@ -50,6 +50,10 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
         public event Action<string, string> OnCashierNotification;
         public event Action<string, string> OnCustomerNotification;
 
+        // Fired after a lookup resolves (found or not), carrying the raw response so
+        // the UI can render/refresh a persistent per-order client display (status bar).
+        public event Action<string, ClientLookupResponse> OnClientLookedUp;
+
         public OrderTracker(BonoosApiClient apiClient)
         {
             _apiClient = apiClient;
@@ -89,6 +93,7 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
                 OnCashierNotification?.Invoke(orderId, response.Message);
             }
 
+            OnClientLookedUp?.Invoke(orderId, response);
             return response;
         }
 

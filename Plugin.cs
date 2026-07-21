@@ -38,6 +38,13 @@ namespace Bonoos.iikoFront.LoyaltyPlugin
         private IDisposable _barcodeSub;
         private PluginConfiguration _config;
 
+        // Persistent status-bar client display. iiko has no "update" — to change the
+        // text we dispose the old item and add a new one. _statusBarOrderId tracks which
+        // order the current display belongs to, so we only clear it for that order.
+        private IDisposable _statusBarItem;
+        private string _statusBarOrderId;
+        private readonly object _statusBarLock = new object();
+
         public Plugin()
         {
             try
@@ -60,6 +67,8 @@ namespace Bonoos.iikoFront.LoyaltyPlugin
                 _orderTracker = new OrderTracker(_apiClient);
                 // Surface lookup/precheck messages (e.g. "Баланс: 200, кэшбэк 5%") to the cashier.
                 _orderTracker.OnCashierNotification += (_, text) => ShowCashier(text);
+                // Persistent status-bar readout of the client bound to the order.
+                _orderTracker.OnClientLookedUp += OnClientLookedUp;
                 _paymentProcessor = new BonoosPaymentProcessor(_orderTracker, Log);
 
                 _paymentSystemRegistration =
@@ -97,6 +106,7 @@ namespace Bonoos.iikoFront.LoyaltyPlugin
             _orderChangedSub?.Dispose();
             _cardSlidedSub?.Dispose();
             _barcodeSub?.Dispose();
+            _statusBarItem?.Dispose();               // remove the status-bar client display
             _paymentSystemRegistration?.Dispose();   // unregister the payment system
             _paymentProcessor?.Dispose();
             _apiClient?.Dispose();
@@ -157,6 +167,7 @@ namespace Bonoos.iikoFront.LoyaltyPlugin
                 oid, order.Number.ToString(), SdkMap.Items(order), SdkMap.Payments(order),
                 card, DateTimeOffset.Now.ToString("O")));
             _orderTracker.RemoveOrder(oid);
+            ClearClientStatusBar(oid);   // receipt closed — drop this order's display
         }
 
         private static void RunSync(Task task)
@@ -171,6 +182,51 @@ namespace Bonoos.iikoFront.LoyaltyPlugin
             task.ContinueWith(
                 t => Log($"Bonoos: background call failed — {t.Exception?.GetBaseException().Message}"),
                 TaskContinuationOptions.OnlyOnFaulted);
+        }
+
+        // ── Status-bar client display (Phase 1) ──
+
+        // Called after every lookup. Shows a persistent status-bar line for a found
+        // client bound to this order; leaves the bar as-is on a not-found (the toast
+        // already reports that) so a mis-scan doesn't wipe a good display.
+        private void OnClientLookedUp(string orderId, Models.ClientLookupResponse resp)
+        {
+            if (resp == null || !resp.Found)
+                return;
+            var name = !string.IsNullOrWhiteSpace(resp.FirstName)
+                ? $"{resp.FirstName} {resp.LastName}".Trim()
+                : (string.IsNullOrWhiteSpace(resp.Username) ? "клиент" : resp.Username);
+            SetClientStatusBar(orderId, $"Bonoos: {name} • {resp.BalanceDisplay} ₽ • кэшбэк {resp.CashbackPercent}%");
+        }
+
+        private void SetClientStatusBar(string orderId, string text)
+        {
+            if (string.IsNullOrEmpty(text)) return;
+            lock (_statusBarLock)
+            {
+                try
+                {
+                    _statusBarItem?.Dispose();   // no update API — replace the item
+                    // rank 200 → toward the right; widthRate 2.0 → a bit wider than default.
+                    _statusBarItem = PluginContext.Operations.AddStatusBarInfo(text, false, 200, 2.0);
+                    _statusBarOrderId = orderId;
+                }
+                catch (Exception ex) { Log($"Bonoos: status bar set failed — {ex.Message}"); }
+            }
+        }
+
+        // Clear the display, but only if it still belongs to orderId (null = force clear).
+        private void ClearClientStatusBar(string orderId = null)
+        {
+            lock (_statusBarLock)
+            {
+                if (orderId != null && _statusBarOrderId != orderId)
+                    return;
+                try { _statusBarItem?.Dispose(); }
+                catch { /* best-effort */ }
+                _statusBarItem = null;
+                _statusBarOrderId = null;
+            }
         }
 
         // Non-modal toast to the cashier (balance after scan, accrual result, etc.).
