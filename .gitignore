@@ -1,5 +1,6 @@
 ## SDK reference DLLs (proprietary, machine-specific)
 iikoFrontSDK/
+_sdk_ref/
 
 ## Build output
 bin/
