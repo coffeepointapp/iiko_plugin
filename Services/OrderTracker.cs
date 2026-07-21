@@ -16,6 +16,12 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
         public string ReservedAmount { get; set; }
         public bool Confirmed { get; set; }
 
+        /// <summary>
+        /// Client's spendable bonus (kopecks) from the last lookup. Null = unknown.
+        /// Used to reject an over-amount at pay-by-bonus time before hitting the backend.
+        /// </summary>
+        public int? AvailableBonusKopecks { get; set; }
+
         /// <summary>iiko payment transactionId for the active reservation (audit only).</summary>
         public string ReservedTransactionId { get; set; }
 
@@ -83,6 +89,7 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
 
             if (response != null && response.Found)
             {
+                state.AvailableBonusKopecks = response.BalanceKopecks;   // cache for the pay-by-bonus cap
                 var text = !string.IsNullOrEmpty(response.BalanceDisplay)
                     ? $"Баланс: {response.BalanceDisplay}, кэшбэк: {response.CashbackPercent}%"
                     : "Клиент найден.";

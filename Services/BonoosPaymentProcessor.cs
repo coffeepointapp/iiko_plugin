@@ -75,6 +75,18 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
                 // LookupClientAsync bound the card to state already.
             }
 
+            // Cap: never spend more bonus than the client has. iiko owns the amount
+            // numpad on the payment screen (Pay receives `sum`), so we can't pre-limit
+            // the input — instead reject an over-amount with the exact max. The backend
+            // is the authoritative guard; this just fails fast with a clear message.
+            if (state.AvailableBonusKopecks is int availKopecks && availKopecks >= 0)
+            {
+                var sumKopecks = (long)Math.Round(sum * 100m);
+                if (sumKopecks > availKopecks)
+                    throw new PaymentActionFailedException(
+                        $"Недостаточно бонусов. Доступно: {availKopecks / 100m:0.##} ₽");
+            }
+
             var ok = RunSync(_tracker.PayByBonusAsync(
                 oid, order.Number.ToString(), SdkMap.Items(order), state.Card, SdkMap.Money(sum)));
 
