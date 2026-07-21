@@ -155,6 +155,20 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
         public void CollectData(Guid orderId, Guid paymentTypeId, IUser cashier,
             IReceiptPrinter printer, IViewManager viewManager, IPaymentDataContext context)
         {
+            // Proactive hint: the moment the cashier picks the Bonoos tender (before
+            // iiko's amount numpad), show the spendable balance so they don't overshoot
+            // the cap. Only when a card is already bound with a known balance — otherwise
+            // stay silent (Pay will prompt for the card). Best-effort, never blocks.
+            try
+            {
+                if (_tracker.TryGetOrder(orderId.ToString(), out var state)
+                    && state.AvailableBonusKopecks is int availKopecks && availKopecks >= 0)
+                {
+                    PluginContext.Operations.AddNotificationMessage(
+                        $"Доступно бонусами: {availKopecks / 100m:0.##} ₽", "Bonoos");
+                }
+            }
+            catch { /* best-effort hint */ }
         }
 
         public void OnPaymentAdded(IOrder order, IPaymentItem paymentItem, IUser cashier,
