@@ -257,18 +257,51 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
             if (!TryGetOrder(orderId, out var state) || !state.BonusReserved)
                 return null;
 
-            var response = await _apiClient.CancelPayByBonusAsync(new CancelPayByBonusRequest
-            {
-                OrderId = orderId,
-                OrderNumber = state.OrderNumber,
-                Items = state.LastItems ?? new List<OrderItemDto>(),
-                Card = state.Card,
-                Amount = state.ReservedAmount
-            }).ConfigureAwait(false);
+            var response = await CancelPayByBonusAsync(
+                orderId,
+                state.OrderNumber,
+                state.LastItems ?? new List<OrderItemDto>(),
+                state.Card,
+                state.ReservedAmount).ConfigureAwait(false);
 
             state.BonusReserved = false;
             state.ReservedAmount = null;
             return response;
+        }
+
+        /// <summary>
+        /// Возврат чека с бонусной оплатой Bonoos → POST /order/pay-by-bonus/cancel/
+        /// (сумма возврата). Не зависит от BonusReserved в памяти.
+        /// </summary>
+        public async Task<FrontolResponse> CancelPayByBonusRefundAsync(
+            string orderId,
+            string orderNumber,
+            List<OrderItemDto> items,
+            CardInfo card,
+            string amount)
+        {
+            return await CancelPayByBonusAsync(orderId, orderNumber, items, card, amount)
+                .ConfigureAwait(false);
+        }
+
+        private async Task<FrontolResponse> CancelPayByBonusAsync(
+            string orderId,
+            string orderNumber,
+            List<OrderItemDto> items,
+            CardInfo card,
+            string amount)
+        {
+            if (string.IsNullOrWhiteSpace(orderId) || string.IsNullOrWhiteSpace(amount))
+                return null;
+
+            return await _apiClient.CancelPayByBonusAsync(new CancelPayByBonusRequest
+            {
+                OrderId = orderId,
+                OrderNumber = orderNumber ?? "",
+                Items = items ?? new List<OrderItemDto>(),
+                Card = card,
+                Amount = amount
+            }).ConfigureAwait(false);
         }
 
         public async Task<ConfirmResponse> ConfirmAsync(string orderId, string orderNumber, List<OrderItemDto> items, List<PaymentDto> payments, CardInfo card, string closedAt, string orderType = "order", string referenceOrderId = "")

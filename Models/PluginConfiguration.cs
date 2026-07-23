@@ -5,7 +5,7 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Models
     /// <summary>
     /// Plugin configuration. Primary file lives in AppData
     /// (%AppData%\iiko\CashServer\PluginConfigs\Bonoos\…) and is auto-created
-    /// on first run with test defaults — same idea as OrderPusher's ConfigManager.
+    /// on first run with production defaults.
     /// </summary>
     public class PluginConfiguration
     {
@@ -26,17 +26,6 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Models
         public int TimeoutSeconds { get; set; } = 25;
 
         /// <summary>
-        /// Test Wallet QR UUID (card.track). Used by tools/emulate_bonoos_scanner.py;
-        /// the plugin itself does not require it at runtime.
-        /// </summary>
-        [JsonProperty("testCardTrack")]
-        public string TestCardTrack { get; set; } = DefaultTestCardTrack;
-
-        /// <summary>Test chat id (card.number) for manual keypad / --chat emulator.</summary>
-        [JsonProperty("testChatId")]
-        public string TestChatId { get; set; } = DefaultTestChatId;
-
-        /// <summary>
         /// Имя скидки iiko со свободной суммой (DiscountByFlexibleSum).
         /// Для карт DISCOUNT: % с сервера → сумма от чека → эта скидка.
         /// </summary>
@@ -50,13 +39,11 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Models
         [JsonProperty("fullLogs")]
         public bool FullLogs { get; set; } = true;
 
-        // ── Test defaults (openapi TEST tunnel — Verle / verle corp) ──
-        public const string DefaultBaseUrl = "https://0hst46kl-8000.euw.devtunnels.ms/api/v1/pos/partners/iiko";
-        public const string DefaultTenantId = "ad312514-b608-4d0c-9d79-00ba4b752615";
-        public const string DefaultToken = "1234567890";
-        public const string DefaultTestCardTrack = "56562dc7-c9e7-4553-8ef6-e052e3ba099f";
-        public const string DefaultTestChatId = "57460843";
-        public const string DefaultFlexibleDiscountName = "Свободная сумма";
+        // ── Defaults for first-run AppData config (production) ──
+        public const string DefaultBaseUrl = "https://pos.bonoos.ru/iiko";
+        public const string DefaultTenantId = "79ea30dc-d48f-4628-a61c-d177ce011b5a";
+        public const string DefaultToken = "f52a9069c358ca615ad57404506259e46bd0948a";
+        public const string DefaultFlexibleDiscountName = "Discount Bonoos";
 
         /// <summary>True once the minimum required fields are present.</summary>
         [JsonIgnore]

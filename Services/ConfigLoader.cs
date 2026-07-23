@@ -8,7 +8,7 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
     /// <summary>
     /// Config lives only in AppData (like Sagi PluginConfigs + OrderPusher auto-create):
     ///   %AppData%\iiko\CashServer\PluginConfigs\Bonoos\Bonoos.LoyaltyPlugin.config.json
-    /// Created with test defaults on first run. No DLL-sidecar.
+    /// Created with production defaults on first run. No DLL-sidecar.
     /// </summary>
     public static class ConfigLoader
     {
@@ -105,10 +105,6 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
                 c.ServiceAccountToken = PluginConfiguration.DefaultToken;
             if (c.TimeoutSeconds <= 0)
                 c.TimeoutSeconds = 25;
-            if (string.IsNullOrWhiteSpace(c.TestCardTrack))
-                c.TestCardTrack = PluginConfiguration.DefaultTestCardTrack;
-            if (string.IsNullOrWhiteSpace(c.TestChatId))
-                c.TestChatId = PluginConfiguration.DefaultTestChatId;
             if (string.IsNullOrWhiteSpace(c.FlexibleDiscountName))
                 c.FlexibleDiscountName = PluginConfiguration.DefaultFlexibleDiscountName;
         }

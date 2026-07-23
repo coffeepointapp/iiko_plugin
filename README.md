@@ -23,7 +23,6 @@ Services/BonoosApiClient.cs        HTTP
 Services/OrderTracker.cs           Состояние по заказу
 Services/DiscountService.cs        Скидка «свободная сумма»
 Services/BonoosUiManager.cs        Кнопка «Гость»
-Services/DemoLicense.cs            Демо до 25.07.2026
 Models/                            DTO + конфиг
 Manifest.xml                       Манифест плагина
 ```
@@ -38,5 +37,5 @@ Manifest.xml                       Манифест плагина
 1. VS / Rider, workload .NET desktop, target **net472**.
 2. NuGet: `Resto.Front.Api.V9` (уже в `.csproj`).
 3. Build → DLL + `Manifest.xml` в Plugins iikoFront.
-4. Настроить тип оплаты Bonoos и скидку «Свободная сумма» в iikoOffice.
+4. Настроить тип оплаты Bonoos и скидку «Discount Bonoos» (имя из конфига) в iikoOffice.
 5. Подробности — [HOW_IT_WORKS.md](HOW_IT_WORKS.md) и [README_ON_VM.md](README_ON_VM.md).

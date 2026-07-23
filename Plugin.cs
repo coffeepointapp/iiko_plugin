@@ -47,10 +47,6 @@ namespace Bonoos.iikoFront.LoyaltyPlugin
         {
             try
             {
-                // Демо для клиента: после 25.07.2026 плагин не поднимается.
-                if (!DemoLicense.EnsureActive(Log))
-                    return;
-
                 _config = ConfigLoader.Load(Log);
                 Log($"Bonoos: config = {ConfigLoader.AppDataConfigPath}");
                 if (!_config.IsConfigured)
@@ -338,22 +334,33 @@ namespace Bonoos.iikoFront.LoyaltyPlugin
                 if (!_orderTracker.TryMarkConfirmSent(oid))
                     return;
 
-                var card = _orderTracker.TryGetOrder(oid, out var state) ? state.Card : null;
-                var isDiscount = state != null && state.IsDiscountCard;
+                // Swagger: card optional — confirm на любой закрытый чек (даже без гостя / без бонусов).
+                CardInfo card = null;
+                if (_orderTracker.TryGetOrder(oid, out var state) && state.Card != null)
+                    card = state.Card;
+                else if (OrderGuestStore.TryGet(oid, out var snap) && snap.Card != null)
+                    card = snap.Card;
 
-                if (!isDiscount && card != null)
+                try
                 {
-                    RunSync(_orderTracker.ConfirmAsync(
-                        oid, order.Number.ToString(), SdkMap.Items(order), SdkMap.Payments(order),
-                        card, DateTimeOffset.Now.ToString("O")));
+                    var resp = _orderTracker.ConfirmAsync(
+                        oid,
+                        order.Number.ToString(),
+                        SdkMap.Items(order),
+                        SdkMap.Payments(order),
+                        card,
+                        DateTimeOffset.Now.ToString("O")).ConfigureAwait(false).GetAwaiter().GetResult();
+                    Log($"Bonoos: [CONFIRM] closed=#{order.Number} ok={resp?.Ok} dup={resp?.Duplicate} " +
+                        $"guest={(card != null)} msg={resp?.Message ?? ""}");
                 }
-                else if (isDiscount)
+                catch (Exception ex)
                 {
-                    Log($"Bonoos: [DISCOUNT] confirm skipped (accrual blocked) order=#{order.Number}");
+                    // Не блокируем закрытие чека на кассе.
+                    Log($"Bonoos: [CONFIRM] failed order=#{order.Number}: {ex.Message}");
                 }
 
                 _orderTracker.RemoveOrder(oid);
-                OrderGuestStore.Remove(oid);
+                // Guest JSON оставляем до закрытия смены — нужен для ReturnPayment → cancel.
                 ClearClientStatusBar(oid);
                 return;
             }
