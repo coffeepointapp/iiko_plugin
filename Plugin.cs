@@ -345,7 +345,8 @@ namespace Bonoos.iikoFront.LoyaltyPlugin
                 {
                     RunSync(_orderTracker.ConfirmAsync(
                         oid, order.Number.ToString(), SdkMap.Items(order), SdkMap.Payments(order),
-                        card, DateTimeOffset.Now.ToString("O")));
+                        card, DateTimeOffset.Now.ToString("O"),
+                        orderSum: SdkMap.Money(order.ResultSum)));
                 }
                 else if (isDiscount)
                 {

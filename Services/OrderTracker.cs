@@ -271,7 +271,7 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
             return response;
         }
 
-        public async Task<ConfirmResponse> ConfirmAsync(string orderId, string orderNumber, List<OrderItemDto> items, List<PaymentDto> payments, CardInfo card, string closedAt, string orderType = "order", string referenceOrderId = "")
+        public async Task<ConfirmResponse> ConfirmAsync(string orderId, string orderNumber, List<OrderItemDto> items, List<PaymentDto> payments, CardInfo card, string closedAt, string orderType = "order", string referenceOrderId = "", string orderSum = null)
         {
             var state = GetOrCreateOrder(orderId, orderNumber);
 
@@ -284,7 +284,8 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
                 Card = card,
                 ClosedAt = closedAt,
                 OrderType = orderType,
-                ReferenceOrderId = referenceOrderId
+                ReferenceOrderId = referenceOrderId,
+                OrderSum = orderSum
             }).ConfigureAwait(false);
 
             if (response != null && response.Ok)

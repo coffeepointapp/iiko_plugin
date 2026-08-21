@@ -167,6 +167,13 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Models
         [JsonProperty("payments")]
         public List<PaymentDto> Payments { get; set; }
 
+        // IOrder.ResultSum — the real amount owed (after all discounts), in rubles.
+        // The backend uses this as the cashback base (order_sum − bonus): it's the
+        // authoritative total, unlike payment sums (cash carries the tendered
+        // amount) or item sums (miss modifiers/discounts).
+        [JsonProperty("order_sum")]
+        public string OrderSum { get; set; }
+
         [JsonProperty("closed_at")]
         public string ClosedAt { get; set; }
 
