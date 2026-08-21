@@ -23,13 +23,11 @@
 
 При создании `Plugin`:
 
-1. **`DemoLicense`** (`Services/DemoLicense.cs`) — проверка локальной даты кассы.  
-   Работает **включительно до 25.07.2026**. С 26.07.2026 плагин не регистрирует оплату/кнопки и показывает сообщение кассиру.
-2. **`ConfigLoader`** — читает/создаёт JSON в AppData (не рядом с DLL):
+1. **`ConfigLoader`** — читает/создаёт JSON в AppData (не рядом с DLL):
    `%AppData%\iiko\CashServer\PluginConfigs\Bonoos\Bonoos.LoyaltyPlugin.config.json`
-3. Регистрация внешней ПС, кнопки «Гость», подписки на события, таймер refresh гостя.
+2. Регистрация внешней ПС, кнопки «Гость», подписки на события, таймер refresh гостя.
 
-Поля конфига: `baseUrl`, `tenantId`, `serviceAccountToken`, `timeoutSeconds`, `flexibleDiscountName` (по умолчанию «Свободная сумма»), `fullLogs`.
+Поля конфига: `baseUrl`, `tenantId`, `serviceAccountToken`, `timeoutSeconds`, `flexibleDiscountName` (по умолчанию «Discount Bonoos»), `fullLogs`.
 
 ---
 
@@ -47,7 +45,6 @@
 | `Services/ApiAuditStore.cs` | JSON-аудит API рядом с DLL |
 | `Services/GuestRefreshService.cs` | Раз в ~5 мин: lookup, если гость старше 1 ч |
 | `Services/LoyaltyPaymentScreenService.cs` | Экран оплаты (gate / подсказки) |
-| `Services/DemoLicense.cs` | Демо-срок |
 | `Models/*` | DTO + конфиг |
 
 Рядом с DLL (не в AppData): `Bonoos_order_guests.json`, `Bonoos_loyalty_audit.json`.  
@@ -66,9 +63,9 @@
  POST /client/lookup/     → карточка гостя, status bar, JSON-снимок
         │
         ├─ card_type = DISCOUNT
-        │     → скидка «Свободная сумма» = FullSum × % / 100 (округление валюты кассы)
+        │     → скидка из конфига (flexibleDiscountName) = FullSum × % / 100 (округление валюты кассы)
         │     → при смене состава (New) — пересчёт
-        │     → бонусы платить нельзя; confirm не шлём
+        │     → бонусы платить нельзя; confirm всё равно уходит при закрытии
         │
         └─ card_type = LOYALTY_COINS (или пусто)
               → баланс в копейках; оплата типом Bonoos
@@ -87,9 +84,13 @@
 Закрытие чека (Closed)
         │
         ▼
- POST /order/confirm/     → только если НЕ DISCOUNT и есть карта
-        + очистка памяти / JSON по заказу
-```
+ POST /order/confirm/     → всегда (card опционален; без гостя тоже)
+        + guest JSON хранится до закрытия смены (для возвратов)
+
+Возврат с типом оплаты Bonoos
+        │
+        ▼
+ POST /order/pay-by-bonus/cancel/  (сумма возврата, card + items)```
 
 ---
 
@@ -106,7 +107,7 @@
 - DISCOUNT → `SyncDiscountForOrder` (через `os` сессии скана или `TryEditCurrentOrder`).
 
 ### Отвязка (кнопка «Гость» → Отвязать)
-1. Снять скидку «Свободная сумма» (`DeleteDiscount` на `os` кнопки).
+1. Снять скидку из конфига (`DeleteDiscount` на `os` кнопки).
 2. Удалить строки оплаты Bonoos.
 3. В фоне — cancel резерва `pay-by-bonus`, если был.
 4. Очистить память + JSON + status bar.
@@ -119,7 +120,7 @@
 
 1. Сервер отдаёт `discount_percent`.
 2. Плагин считает сумму от **FullSum** (база до скидок): `amount = FullSum × % / 100`, округление по валюте ресторана (`FractionalPartLength`, `MinimumDenomination`) — для KZT часто целые тенге (например 15% от 150 → **23**, не 22.50).
-3. Тип скидки в iikoOffice: активный, **DiscountByFlexibleSum**, имя = `flexibleDiscountName` (по умолчанию «Свободная сумма»).
+3. Тип скидки в iikoOffice: активный, **DiscountByFlexibleSum**, имя = `flexibleDiscountName` (по умолчанию «Discount Bonoos»).
 4. Применять только пока заказ в статусе **New**. На Bill состав через SDK уже не правят.
 5. Не вызывать `GetOrderById` на заказ, который уже в edit-session (EntityAlreadyInUse / SDK #224) — stub = `IOrder` из сессии.
 6. Пустой заказ (`FullSum = 0`) — скидку не вешать и не спамить retry.
@@ -160,8 +161,8 @@
 | Момент | API | Условие |
 |--------|-----|---------|
 | Первый переход заказа в **Bill** | `POST /order/precheck/` | Есть привязанная карта; **один раз** на `order_id` |
-| **Closed** | `POST /order/confirm/` | Есть карта и **не** DISCOUNT |
-| DISCOUNT + Closed | — | Confirm **не** шлём (начисление заблокировано) |
+| **Closed** | `POST /order/confirm/` | **Всегда** (guest optional; без гостя / без бонусов тоже) |
+| Возврат оплаты Bonoos | `POST /order/pay-by-bonus/cancel/` | `ReturnPayment*` — сумма возврата + card из JSON/памяти |
 
 `OrderChanged` на каждый чих **не** дергает precheck.
 
@@ -193,12 +194,7 @@
 ## 11. Настройка в iikoOffice (кратко)
 
 1. Внешний тип оплаты → система **Bonoos** / ключ `bonoos-loyalty`, привязать к безналу.
-2. Скидка «Свободная сумма» (или имя из конфига): активна, свободная сумма, доступна на терминале.
+2. Скидка «Discount Bonoos» (или имя из конфига): активна, свободная сумма, доступна на терминале.
 3. DLL + `Manifest.xml` в папку плагинов Front; конфиг править в AppData после первого запуска.
 
 ---
-
-## 12. Демо-клиенту
-
-Сейчас плагин ограничен датой в `DemoLicense.ExpiresOnInclusive` (**25.07.2026**).  
-После оплаты/активации — убрать или заменить проверку в `Services/DemoLicense.cs` / вызов в `Plugin` ctor.

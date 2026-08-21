@@ -293,15 +293,87 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
         public void ReturnPayment(decimal sum, Guid? orderId, Guid paymentTypeId, Guid transactionId,
             IPointOfSale pointOfSale, IUser cashier, IReceiptPrinter printer, IViewManager viewManager,
             IPaymentDataContext context)
-            => throw new PaymentActionFailedException("Возврат бонусов пока не поддерживается.", false);
+            => ExecuteBonusRefund("ReturnPayment", sum, orderId);
 
         public void ReturnPaymentSilently(decimal sum, Guid? orderId, Guid paymentTypeId, Guid transactionId,
             IPointOfSale pointOfSale, IUser cashier, IReceiptPrinter printer, IPaymentDataContext context)
-            => throw new PaymentActionFailedException("Возврат бонусов пока не поддерживается.", false);
+            => ExecuteBonusRefund("ReturnPaymentSilently", sum, orderId);
 
         public void ReturnPaymentWithoutOrder(decimal sum, Guid? orderId, Guid paymentTypeId,
             IPointOfSale pointOfSale, IUser cashier, IReceiptPrinter printer, IViewManager viewManager)
-            => throw new PaymentActionFailedException("Возврат бонусов без заказа не поддерживается.", false);
+            => ExecuteBonusRefund("ReturnPaymentWithoutOrder", sum, orderId);
+
+        /// <summary>
+        /// Возврат типа оплаты Bonoos → POST /order/pay-by-bonus/cancel/ (как в swagger).
+        /// Не блокируем кассу при ошибке API.
+        /// </summary>
+        private void ExecuteBonusRefund(string logPrefix, decimal sum, Guid? orderId)
+        {
+            if (sum <= 0)
+            {
+                _log($"Bonoos: [LOYALTY] {logPrefix}: sum<=0 — skip");
+                return;
+            }
+
+            var oid = orderId?.ToString();
+            string orderNumber = "";
+            var items = new System.Collections.Generic.List<Models.OrderItemDto>();
+            CardInfo card = null;
+
+            if (orderId.HasValue)
+            {
+                try
+                {
+                    var order = PluginContext.Operations.GetOrderById(orderId.Value);
+                    if (order != null)
+                    {
+                        orderNumber = order.Number.ToString();
+                        items = SdkMap.Items(order);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _log($"Bonoos: [LOYALTY] {logPrefix}: GetOrderById: {ex.Message}");
+                }
+            }
+
+            if (!string.IsNullOrEmpty(oid) && _tracker.TryGetOrder(oid, out var state) && state.Card != null)
+            {
+                card = state.Card;
+                if (string.IsNullOrEmpty(orderNumber))
+                    orderNumber = state.OrderNumber ?? "";
+                if (items.Count == 0 && state.LastItems != null)
+                    items = state.LastItems;
+            }
+
+            if (card == null && !string.IsNullOrEmpty(oid) &&
+                OrderGuestStore.TryGet(oid, out var snap) && snap?.Card != null)
+            {
+                card = snap.Card;
+                if (string.IsNullOrEmpty(orderNumber) && snap.OrderNumber.HasValue)
+                    orderNumber = snap.OrderNumber.Value.ToString();
+            }
+
+            if (card == null)
+            {
+                _log($"Bonoos: [LOYALTY] {logPrefix}: no card for orderId={oid} — cancel skip (sum={sum:N2})");
+                return;
+            }
+
+            var amount = SdkMap.Money(sum);
+            _log($"Bonoos: [LOYALTY] {logPrefix}: POST pay-by-bonus/cancel sum={amount} orderId={oid}");
+
+            try
+            {
+                var resp = RunSync(_tracker.CancelPayByBonusRefundAsync(
+                    oid, orderNumber, items, card, amount));
+                _log($"Bonoos: [LOYALTY] {logPrefix}: cancel code={resp?.Code} err={resp?.Error ?? ""}");
+            }
+            catch (Exception ex)
+            {
+                _log($"Bonoos: [LOYALTY] {logPrefix}: cancel failed: {ex.Message}");
+            }
+        }
 
         public bool CanPaySilently(decimal sum, Guid? orderId, Guid paymentTypeId, IPaymentDataContext context)
             => false;

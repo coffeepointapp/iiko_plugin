@@ -24,7 +24,7 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
         public DiscountService(string discountTypeName, Action<string> log)
         {
             _discountTypeName = string.IsNullOrWhiteSpace(discountTypeName)
-                ? "Свободная сумма"
+                ? "Discount Bonoos"
                 : discountTypeName.Trim();
             _log = log ?? (_ => { });
         }
