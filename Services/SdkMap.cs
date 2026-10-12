@@ -33,10 +33,10 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
                 Quantity = it.Amount.ToString("F3", CultureInfo.InvariantCulture),
                 Sum = Money(it.Price * it.Amount),
                 Comment = "",
-                // Assigned modifiers (size lives here for drinks). SDK members to
-                // verify on build: IOrderProductItem.Modifiers → IOrderModifierItem
-                // { .Id, .Product(.Number/.Name), .Amount, .ResultSum }.
-                Modifiers = it.Modifiers?.Select(m => new ModifierInfo
+                // Assigned modifiers (size lives here for drinks). Verified against
+                // Resto.Front.Api.V9: IOrderProductItem.AssignedModifiers →
+                // IOrderModifierItem { .Id, .Product(.Number/.Name), .Amount, .ResultSum }.
+                Modifiers = it.AssignedModifiers?.Select(m => new ModifierInfo
                 {
                     Id = m.Id.ToString(),
                     Code = Convert.ToString(m.Product.Number, CultureInfo.InvariantCulture),
