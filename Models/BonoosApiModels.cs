@@ -46,6 +46,31 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Models
 
         [JsonProperty("comment")]
         public string Comment { get; set; }
+
+        // Assigned modifiers on the line — for drinks the SIZE lives here, and its
+        // Code (modifier Артикул / IProduct.Number) is what resolves the line to a
+        // ProductVariant on the backend. Omitted (null) when the line has none.
+        [JsonProperty("modifiers", NullValueHandling = NullValueHandling.Ignore)]
+        public List<ModifierInfo> Modifiers { get; set; }
+    }
+
+    public class ModifierInfo
+    {
+        [JsonProperty("id")]
+        public string Id { get; set; }
+
+        // Modifier's Артикул (IProduct.Number) — the size/variant code.
+        [JsonProperty("code")]
+        public string Code { get; set; }
+
+        [JsonProperty("name")]
+        public string Name { get; set; }
+
+        [JsonProperty("amount")]
+        public string Amount { get; set; }
+
+        [JsonProperty("sum")]
+        public string Sum { get; set; }
     }
 
     public class PaymentTypeInfo
