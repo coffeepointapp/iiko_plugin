@@ -88,6 +88,11 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
         private readonly ConcurrentDictionary<string, byte> _confirmSent =
             new ConcurrentDictionary<string, byte>();
 
+        // Reverse-cashback-sent guard, keyed on the ORIGINAL order id (storno
+        // reverses each original at most once per session). Driven by OrderStorned.
+        private readonly ConcurrentDictionary<string, byte> _refundSent =
+            new ConcurrentDictionary<string, byte>();
+
         /// <summary>Precheck уже ушёл на Bill для этого order_id — не повторяем.</summary>
         private readonly ConcurrentDictionary<string, byte> _precheckSent =
             new ConcurrentDictionary<string, byte>();
@@ -339,6 +344,12 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
         public bool TryMarkConfirmSent(string orderId)
         {
             return orderId != null && _confirmSent.TryAdd(orderId, 0);
+        }
+
+        /// <summary>True once per ORIGINAL order id — gates the storno reversal.</summary>
+        public bool TryMarkRefundSent(string originalOrderId)
+        {
+            return originalOrderId != null && _refundSent.TryAdd(originalOrderId, 0);
         }
 
         /// <summary>

@@ -8,6 +8,7 @@ using Resto.Front.Api.Attributes;
 using Resto.Front.Api.Attributes.JetBrains;
 using Resto.Front.Api.Data.Common;
 using Resto.Front.Api.Data.Orders;
+using Resto.Front.Api.Data.Security;
 using Resto.Front.Api.Data.View;
 using Resto.Front.Api.UI;
 
@@ -35,6 +36,7 @@ namespace Bonoos.iikoFront.LoyaltyPlugin
         private IDisposable _cardSlidedSub;
         private IDisposable _barcodeSub;
         private IDisposable _cafeSessionClosingSub;
+        private IDisposable _stornedSub;
         private PluginConfiguration _config;
 
         private IDisposable _statusBarItem;
@@ -84,6 +86,12 @@ namespace Bonoos.iikoFront.LoyaltyPlugin
 
                 _orderChangedSub = PluginContext.Notifications.OrderChanged.Subscribe(
                     new ActionObserver<EntityChangedEventArgs<IOrder>>(OnOrderChanged));
+                // Earned-cashback reversal on a current-shift return (storno). A return
+                // never reaches OnOrderChanged→Closed (the storno order is a NEW order that
+                // is either deleted on a full return or re-sold as a genuine sale), so this
+                // is the only reliable earn-reversal trigger. SDK: INotification<(IOrder
+                // order, Guid newOrderId, IUser user)>.
+                _stornedSub = PluginContext.Notifications.OrderStorned.Subscribe(OnOrderStorned);
                 _cardSlidedSub = PluginContext.Notifications.OrderEditCardSlided.Subscribe(OnCardSlided);
                 _barcodeSub = PluginContext.Notifications.OrderEditBarcodeScanned.Subscribe(OnBarcodeScanned);
 
@@ -140,6 +148,7 @@ namespace Bonoos.iikoFront.LoyaltyPlugin
             _cardSlidedSub?.Dispose();
             _barcodeSub?.Dispose();
             _cafeSessionClosingSub?.Dispose();
+            _stornedSub?.Dispose();
             _statusBarItem?.Dispose();
             _paymentSystemRegistration?.Dispose();
             _paymentProcessor?.Dispose();
@@ -321,6 +330,67 @@ namespace Bonoos.iikoFront.LoyaltyPlugin
             }
         }
 
+        /// <summary>
+        /// CURRENT-SHIFT return (storno). iiko reverses the original order (treated as
+        /// deleted) and opens a new order <c>args.newOrderId</c>; <c>args.order</c> is the
+        /// ORIGINAL sale being returned. We reverse the earned cashback on the original and
+        /// write a refund receipt (order_type="refund", reference_order_id = original id).
+        /// SPENT coins are restored separately by ReturnPayment → /pay-by-bonus/cancel/
+        /// (keyed on transactionId), so the two legs never double up. MUST NOT throw — a
+        /// throwing notification handler is dropped by iiko until the plugin restarts.
+        /// Past-shift returns surface via PastOrderStorned (IObservable&lt;StornedPastOrderInfo&gt;)
+        /// — not wired yet (see integrations/partners/iiko/OVERVIEW.md).
+        /// </summary>
+        private void OnOrderStorned((IOrder order, Guid newOrderId, IUser user) args)
+        {
+            var original = args.order;
+            if (original == null)
+            {
+                Log($"Bonoos: [REFUND] OrderStorned fired but original order is null (new={args.newOrderId}) — skip");
+                return;
+            }
+
+            var originalId = original.Id.ToString();
+            Log($"Bonoos: [REFUND] OrderStorned fired orig=#{original.Number} origId={originalId} new={args.newOrderId}");
+
+            // Reverse each original at most once per session.
+            if (!_orderTracker.TryMarkRefundSent(originalId))
+            {
+                Log($"Bonoos: [REFUND] already reversed orig={originalId} — skip (idempotent)");
+                return;
+            }
+
+            // Card: the original sale's guest snapshot. Its _orders entry is already gone
+            // (removed when the sale closed), but the guest JSON is kept until shift close —
+            // that's the reliable source here.
+            CardInfo card = null;
+            if (_orderTracker.TryGetOrder(originalId, out var state) && state.Card != null)
+                card = state.Card;
+            else if (OrderGuestStore.TryGet(originalId, out var snap) && snap.Card != null)
+                card = snap.Card;
+
+            try
+            {
+                var resp = _orderTracker.ConfirmAsync(
+                    args.newOrderId.ToString(),          // return document id (≠ the sale's order_id)
+                    original.Number.ToString(),
+                    SdkMap.Items(original),
+                    SdkMap.Payments(original),
+                    card,
+                    DateTimeOffset.Now.ToString("O"),
+                    orderType: "refund",
+                    referenceOrderId: originalId,
+                    orderSum: SdkMap.Money(original.ResultSum)).ConfigureAwait(false).GetAwaiter().GetResult();
+                Log($"Bonoos: [REFUND] storned #{original.Number} orig={originalId} new={args.newOrderId} " +
+                    $"ok={resp?.Ok} dup={resp?.Duplicate} guest={(card != null)} msg={resp?.Message ?? ""}");
+            }
+            catch (Exception ex)
+            {
+                // Never propagate — would disable this handler until plugin restart.
+                Log($"Bonoos: [REFUND] failed storned #{original.Number}: {ex.Message}");
+            }
+        }
+
         private void OnOrderChanged(EntityChangedEventArgs<IOrder> e)
         {
             var order = e.Entity;
@@ -334,7 +404,15 @@ namespace Bonoos.iikoFront.LoyaltyPlugin
                 if (!_orderTracker.TryMarkConfirmSent(oid))
                     return;
 
-                // Swagger: card optional — confirm на любой закрытый чек (даже без гостя / без бонусов).
+                // Every Closed order is a SALE — earn cashback on the fiscal portion.
+                // Returns do NOT surface here. A storno reverses the original (treated as
+                // deleted) and opens a NEW order: on a full return that new order is deleted
+                // (never Closed); if it is re-sold it reaches Closed and IS a genuine new
+                // sale that should earn. Earn REVERSAL is driven separately by OrderStorned
+                // (see OnOrderStorned), so StornedOrderId is metadata only here and never
+                // switches sale↔refund.
+                var stornedOf = order.StornedOrderId?.ToString();
+
                 CardInfo card = null;
                 if (_orderTracker.TryGetOrder(oid, out var state) && state.Card != null)
                     card = state.Card;
@@ -350,9 +428,11 @@ namespace Bonoos.iikoFront.LoyaltyPlugin
                         SdkMap.Payments(order),
                         card,
                         DateTimeOffset.Now.ToString("O"),
+                        orderType: "order",
+                        referenceOrderId: "",
                         orderSum: SdkMap.Money(order.ResultSum)).ConfigureAwait(false).GetAwaiter().GetResult();
-                    Log($"Bonoos: [CONFIRM] closed=#{order.Number} ok={resp?.Ok} dup={resp?.Duplicate} " +
-                        $"guest={(card != null)} msg={resp?.Message ?? ""}");
+                    Log($"Bonoos: [CONFIRM] closed=#{order.Number} type=order " +
+                        $"storno-of={stornedOf ?? ""} ok={resp?.Ok} dup={resp?.Duplicate} guest={(card != null)} msg={resp?.Message ?? ""}");
                 }
                 catch (Exception ex)
                 {
@@ -361,7 +441,8 @@ namespace Bonoos.iikoFront.LoyaltyPlugin
                 }
 
                 _orderTracker.RemoveOrder(oid);
-                // Guest JSON оставляем до закрытия смены — нужен для ReturnPayment → cancel.
+                // Guest JSON оставляем до закрытия смены — нужен для ReturnPayment → cancel
+                // и для OrderStorned → reversal (карта гостя берётся по ОРИГИНАЛЬНОМУ заказу).
                 ClearClientStatusBar(oid);
                 return;
             }
