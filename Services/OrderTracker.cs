@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using Bonoos.iikoFront.LoyaltyPlugin.Models;
 
@@ -39,6 +40,16 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
 
         public bool IsDiscountCard =>
             string.Equals(CardType, "DISCOUNT", StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>SUBSCRIPTION card — benefit is a per-check comp driven by precheck.</summary>
+        public bool IsSubscriptionCard =>
+            string.Equals(CardType, "SUBSCRIPTION", StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Item signature of the LAST subscription precheck — so OrderChanged doesn't
+        /// re-hit the backend while the cart is unchanged. Null = never prechecked.
+        /// </summary>
+        public string SubscriptionItemSig { get; set; }
 
         /// <summary>Display name from last successful lookup.</summary>
         public string GuestDisplayName { get; set; }
@@ -162,6 +173,7 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
             state.CardType = null;
             state.DiscountPercent = null;
             state.AppliedFlexibleDiscountSum = null;
+            state.SubscriptionItemSig = null;
             state.AvailableBonusKopecks = null;
             state.BalanceDisplay = null;
             state.CashbackPercent = null;
@@ -218,6 +230,70 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
             }
 
             return response;
+        }
+
+        /// <summary>
+        /// Subscription precheck result, parsed from the shared precheck response.
+        /// The backend returns, per position, a <c>discountAmount</c> (kopecks) equal to
+        /// the covered line's full price when the redemption is valid, else 0 — plus a
+        /// cashier/customer text («Подписка … Готово/Не готово к использованию»).
+        /// </summary>
+        public sealed class SubscriptionPrecheck
+        {
+            /// <summary>Total comp in RUBLES (sum of positions' discountAmount ÷ 100).</summary>
+            public decimal CompRub { get; set; }
+
+            /// <summary>True when the backend validated the redemption (comp &gt; 0).</summary>
+            public bool Ready => CompRub > 0m;
+
+            public string CashierText { get; set; }
+            public string CustomerText { get; set; }
+        }
+
+        /// <summary>
+        /// Run precheck for a SUBSCRIPTION card and translate the response into a comp
+        /// decision. The backend is the authority on validity (single covered item, not
+        /// expired, within the daily/period quota) — the plugin only applies what it
+        /// returns. Never throws; a null/failed response yields a not-ready result.
+        /// </summary>
+        public async Task<SubscriptionPrecheck> PrecheckSubscriptionAsync(
+            string orderId, string orderNumber, List<OrderItemDto> items, CardInfo card)
+        {
+            var state = GetOrCreateOrder(orderId, orderNumber);
+            state.Card = card;
+            state.LastItems = items;
+
+            var result = new SubscriptionPrecheck();
+            FrontolResponse response;
+            try
+            {
+                response = await _apiClient.PrecheckOrderAsync(new PrecheckRequest
+                {
+                    OrderId = orderId,
+                    OrderNumber = orderNumber,
+                    Items = items,
+                    Card = card
+                }).ConfigureAwait(false);
+            }
+            catch
+            {
+                return result; // not ready — never block the sale on a precheck failure
+            }
+
+            if (response == null || response.Code != 0)
+                return result;
+
+            decimal compKop = 0m;
+            if (response.Document?.Positions != null)
+                foreach (var pos in response.Document.Positions)
+                    compKop += pos.DiscountAmount ?? 0m;
+
+            result.CompRub = compKop / 100m;
+            result.CashierText = response.CashierInformation?
+                .FirstOrDefault(x => !string.IsNullOrWhiteSpace(x?.Text))?.Text;
+            result.CustomerText = response.CustomerInformation?
+                .FirstOrDefault(x => !string.IsNullOrWhiteSpace(x?.Text))?.Text;
+            return result;
         }
 
         /// <summary>

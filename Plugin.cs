@@ -2,6 +2,8 @@ using System;
 using Bonoos.iikoFront.LoyaltyPlugin.Models;
 using Bonoos.iikoFront.LoyaltyPlugin.Services;
 
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using Resto.Front.Api;
 using Resto.Front.Api.Attributes;
@@ -221,6 +223,9 @@ namespace Bonoos.iikoFront.LoyaltyPlugin
 
             // Скидку — через os экрана заказа (скан) или TryEditCurrentOrder.
             SyncDiscountForOrder(order, os, scheduleRetry: true);
+
+            // Подписка — бесплатный напиток по предчеку (авторитет — бэкенд).
+            SyncSubscriptionForOrder(order, os, vm);
         }
 
         private void OnGuestUnbound(string orderId)
@@ -255,6 +260,11 @@ namespace Bonoos.iikoFront.LoyaltyPlugin
                         _discountService.RemoveOurDiscount(sessionOrder, os);
                     return;
                 }
+
+                // SUBSCRIPTION comp uses the SAME flexible-sum discount type but is managed
+                // by SyncSubscriptionForOrder — don't let the % path strip it here.
+                if (state.IsSubscriptionCard)
+                    return;
 
                 if (!state.IsDiscountCard || !(state.DiscountPercent is int pct) || pct <= 0)
                 {
@@ -328,6 +338,164 @@ namespace Bonoos.iikoFront.LoyaltyPlugin
             {
                 _discountSyncing.TryRemove(sessionOrder.Id, out _);
             }
+        }
+
+        // ───────────────────────────── SUBSCRIPTION (free covered drink) ─────────────────────────
+        // The comp is driven entirely by the backend precheck: it validates the
+        // redemption (single covered item, not expired, within the daily/period quota)
+        // and returns, per position, a discountAmount equal to the covered line's price.
+        // The plugin applies that as a flexible-sum discount (reusing the % discount
+        // type — no extra iikoOffice setup) and tells the cashier what happened. If the
+        // sale stops being valid (e.g. a second item is added) the comp is removed, so a
+        // free drink can never slip through without the backend recording the usage.
+
+        /// <summary>Signature of the cart — so we don't re-hit precheck on no-op OrderChanged.</summary>
+        private static string BuildSubscriptionItemSig(System.Collections.Generic.List<OrderItemDto> items)
+        {
+            if (items == null) return "";
+            return string.Join("|", items.Select(i =>
+                $"{i.Product?.Code}:{i.Quantity}:" +
+                string.Join(",", (i.Modifiers ?? new System.Collections.Generic.List<ModifierInfo>())
+                    .Select(m => m.Code))));
+        }
+
+        private static string SubscriptionStatusText(string name, OrderTracker.SubscriptionPrecheck sub)
+        {
+            if (sub != null && !string.IsNullOrWhiteSpace(sub.CashierText))
+                return $"Bonoos: {sub.CashierText}";
+            var who = string.IsNullOrWhiteSpace(name) ? "Клиент" : name;
+            return sub != null && sub.Ready
+                ? $"Bonoos: {who} • подписка — напиток бесплатно"
+                : $"Bonoos: {who} • подписка — не готово";
+        }
+
+        /// <summary>
+        /// Bind-time (scan) subscription sync: precheck now, apply/remove the comp via the
+        /// scan session, and show the cashier a clear popup + status bar. Blocking on the
+        /// precheck here mirrors the lookup call that just ran — it's a deliberate scan.
+        /// </summary>
+        private void SyncSubscriptionForOrder(IOrder sessionOrder, IOperationService os, IViewManager vm)
+        {
+            if (sessionOrder == null || _discountService == null)
+                return;
+
+            var oid = sessionOrder.Id.ToString();
+            if (!_orderTracker.TryGetOrder(oid, out var state) || state.Card == null || !state.IsSubscriptionCard)
+                return;
+
+            if (!_discountSyncing.TryAdd(sessionOrder.Id, 0))
+                return;
+
+            try
+            {
+                var items = SdkMap.Items(sessionOrder);
+                state.SubscriptionItemSig = BuildSubscriptionItemSig(items);
+
+                OrderTracker.SubscriptionPrecheck sub;
+                try
+                {
+                    sub = _orderTracker.PrecheckSubscriptionAsync(
+                            oid, sessionOrder.Number.ToString(), items, state.Card)
+                        .ConfigureAwait(false).GetAwaiter().GetResult();
+                }
+                catch (Exception ex)
+                {
+                    Log($"Bonoos: [SUB] precheck failed order=#{sessionOrder.Number}: {ex.Message}");
+                    state.SubscriptionItemSig = null; // allow a retry on the next change
+                    return;
+                }
+
+                if (sub.Ready)
+                {
+                    var ok = _discountService.ApplySubscriptionComp(
+                        sessionOrder, sub.CompRub, os, state.AppliedFlexibleDiscountSum);
+                    if (!ok)
+                        ok = _discountService.ApplySubscriptionCompViaTryEditCurrentOrder(
+                            sessionOrder.Id, sub.CompRub, state.AppliedFlexibleDiscountSum, out _);
+                    state.AppliedFlexibleDiscountSum = ok ? sub.CompRub : (decimal?)null;
+                }
+                else
+                {
+                    // Not ready — strip any stale comp.
+                    _discountService.ApplySubscriptionComp(sessionOrder, 0m, os, state.AppliedFlexibleDiscountSum);
+                    state.AppliedFlexibleDiscountSum = null;
+                }
+
+                if (vm != null)
+                {
+                    var text = !string.IsNullOrWhiteSpace(sub.CashierText)
+                        ? sub.CashierText
+                        : (sub.Ready
+                            ? $"Напиток по подписке бесплатно (-{sub.CompRub:N2} ₽)."
+                            : "Подписка не готова к использованию (проверьте: один напиток, лимит на сегодня, срок).");
+                    if (sub.Ready)
+                        _ui.ShowSuccess(vm, "Подписка", text);
+                    else
+                        _ui.ShowError(vm, "Подписка", text);
+                }
+
+                SetClientStatusBar(oid, SubscriptionStatusText(state.GuestDisplayName, sub));
+            }
+            catch (Exception ex)
+            {
+                Log($"Bonoos: [SUB] sync — {ex.Message}");
+            }
+            finally
+            {
+                _discountSyncing.TryRemove(sessionOrder.Id, out _);
+            }
+        }
+
+        /// <summary>
+        /// Re-evaluate the subscription comp when the cart changes (OrderChanged/New). Only
+        /// fires a precheck when the item signature actually changed; applies/removes the
+        /// comp via TryEditCurrentOrder off the notification thread.
+        /// </summary>
+        private void ReevaluateSubscriptionOnChange(IOrder order, OrderLoyaltyState state)
+        {
+            var oid = order.Id.ToString();
+            var number = order.Number.ToString();
+            var card = state.Card;
+            var orderGuid = order.Id;
+
+            List<OrderItemDto> items;
+            try { items = SdkMap.Items(order); }
+            catch { return; }
+
+            var sig = BuildSubscriptionItemSig(items);
+            if (sig == state.SubscriptionItemSig)
+                return; // cart unchanged since the last subscription precheck
+            state.SubscriptionItemSig = sig;
+
+            if (!_discountSyncing.TryAdd(orderGuid, 0))
+            {
+                // Something is applying for this order right now — let the next change retry.
+                state.SubscriptionItemSig = null;
+                return;
+            }
+
+            var prev = state.AppliedFlexibleDiscountSum;
+            FireAndForget(Task.Run(async () =>
+            {
+                try
+                {
+                    var sub = await _orderTracker
+                        .PrecheckSubscriptionAsync(oid, number, items, card)
+                        .ConfigureAwait(false);
+
+                    var ok = _discountService.ApplySubscriptionCompViaTryEditCurrentOrder(
+                        orderGuid, sub.Ready ? sub.CompRub : 0m, prev, out var applied);
+
+                    if (_orderTracker.TryGetOrder(oid, out var s))
+                        s.AppliedFlexibleDiscountSum = (sub.Ready && ok) ? (applied ?? sub.CompRub) : (decimal?)null;
+
+                    SetClientStatusBar(oid, SubscriptionStatusText(state.GuestDisplayName, sub));
+                }
+                finally
+                {
+                    _discountSyncing.TryRemove(orderGuid, out _);
+                }
+            }));
         }
 
         /// <summary>
@@ -455,6 +623,15 @@ namespace Bonoos.iikoFront.LoyaltyPlugin
 
                 if (!_orderTracker.TryGetOrder(oid, out var state) || state.Card == null)
                     return;
+
+                // SUBSCRIPTION: re-check the comp when the cart changes (the backend
+                // re-validates at confirm, so a stale comp must never survive).
+                if (state.IsSubscriptionCard)
+                {
+                    ReevaluateSubscriptionOnChange(order, state);
+                    return;
+                }
+
                 if (!state.IsDiscountCard || !(state.DiscountPercent is int pct) || pct <= 0)
                     return;
 
@@ -515,9 +692,13 @@ namespace Bonoos.iikoFront.LoyaltyPlugin
                 ? $"{resp.FirstName} {resp.LastName}".Trim()
                 : (string.IsNullOrWhiteSpace(resp.Username) ? "клиент" : resp.Username);
 
-            string text = resp.IsDiscountCard
-                ? $"Bonoos: {name} • скидка {resp.DiscountPercent}%"
-                : $"Bonoos: {name} • {resp.BalanceDisplay} ₽ • кэшбэк {resp.CashbackPercent}%";
+            string text;
+            if (resp.IsSubscriptionCard)
+                text = $"Bonoos: {name} • карта подписки";
+            else if (resp.IsDiscountCard)
+                text = $"Bonoos: {name} • скидка {resp.DiscountPercent}%";
+            else
+                text = $"Bonoos: {name} • {resp.BalanceDisplay} ₽ • кэшбэк {resp.CashbackPercent}%";
 
             SetClientStatusBar(orderId, text);
         }

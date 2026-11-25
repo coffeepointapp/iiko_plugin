@@ -92,7 +92,11 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
             var sb = new StringBuilder();
             sb.AppendLine($"Клиент: {name}");
 
-            if (resp.IsDiscountCard)
+            if (resp.IsSubscriptionCard)
+            {
+                sb.AppendLine("Карта подписки");
+            }
+            else if (resp.IsDiscountCard)
             {
                 sb.AppendLine($"Скидочная карта: {resp.DiscountPercent ?? 0}%");
             }

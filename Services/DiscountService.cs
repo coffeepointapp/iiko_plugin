@@ -255,6 +255,139 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Services
             return ok;
         }
 
+        /// <summary>
+        /// Subscription comp: apply an ABSOLUTE ruble discount (the covered line's price,
+        /// taken from precheck) using the SAME flexible-sum discount type as % cards — so
+        /// no extra iikoOffice setup is needed. Pass <paramref name="amountRub"/> ≤ 0 to
+        /// remove a comp we previously applied (e.g. the sale stopped being a valid
+        /// single-item redemption). The amount is capped at the order total (100% off the
+        /// single covered line). Additive — the % discount path is untouched.
+        /// </summary>
+        public bool ApplySubscriptionComp(
+            IOrder sessionOrder,
+            decimal amountRub,
+            IOperationService os,
+            decimal? previousAmount = null)
+        {
+            if (sessionOrder == null || os == null)
+                return false;
+
+            if (sessionOrder.Status != OrderStatus.New)
+            {
+                _log($"Bonoos: [SUB] skip — нужен New, сейчас {sessionOrder.Status}");
+                return false;
+            }
+
+            var baseSum = sessionOrder.FullSum > 0 ? sessionOrder.FullSum : sessionOrder.ResultSum;
+
+            // Not ready (precheck said 0) or empty cart → drop any comp we had hanging.
+            if (amountRub <= 0m || baseSum <= 0m)
+            {
+                if (HasOurDiscount(sessionOrder))
+                {
+                    _log("Bonoos: [SUB] not ready — снимаем ранее повешенную скидку подписки");
+                    RemoveOurDiscount(sessionOrder, os);
+                }
+                return false;
+            }
+
+            // Never comp more than the check total (covered line == the single-item cart).
+            var amount = RoundToCurrency(os, amountRub > baseSum ? baseSum : amountRub);
+            if (amount <= 0m)
+                return false;
+
+            var discountType = FindFlexibleDiscountType(os);
+            if (discountType == null)
+            {
+                _log($"Bonoos: [SUB] тип «{_discountTypeName}» не найден (IsActive + DiscountByFlexibleSum?).");
+                LogAvailableFlexibleTypes(os);
+                return false;
+            }
+
+            if (previousAmount.HasValue &&
+                Math.Abs(previousAmount.Value - amount) < 0.005m &&
+                HasOurDiscount(sessionOrder))
+            {
+                _log($"Bonoos: [SUB] already applied {amount:N2} — skip");
+                return true;
+            }
+
+            try
+            {
+                var credentials = os.GetDefaultCredentials();
+                var session = os.CreateEditSession();
+                var stub = (IOrderStub)(object)sessionOrder;
+
+                var removed = 0;
+                foreach (var item in (sessionOrder.Discounts ?? Enumerable.Empty<IDiscountItem>()).ToList())
+                {
+                    var name = item?.DiscountType?.Name?.Trim();
+                    if (!string.Equals(name, _discountTypeName, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    session.DeleteDiscount(item, stub);
+                    removed++;
+                }
+
+                session.AddFlexibleSumDiscount(amount, discountType, stub);
+                _log($"Bonoos: [SUB] session: delete={removed}, add amount={amount:N2}, HasChanges={session.HasChanges}");
+
+                if (session.HasChanges)
+                    os.SubmitChanges(session, credentials);
+
+                _log($"Bonoos: [SUB] OK «{_discountTypeName}» подписка → {amount:N2} " +
+                     $"(база {baseSum:N2}) order=#{sessionOrder.Number}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _log($"Bonoos: [SUB] Apply failed ({ex.GetType().Name}): {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Apply (or, with <paramref name="amountRub"/> ≤ 0, remove) the subscription comp
+        /// when the order is on screen but no session os is in hand — via TryEditCurrentOrder.
+        /// </summary>
+        public bool ApplySubscriptionCompViaTryEditCurrentOrder(
+            Guid orderId,
+            decimal amountRub,
+            decimal? previousAmount,
+            out decimal? appliedAmount)
+        {
+            appliedAmount = null;
+            var ok = false;
+            decimal? got = null;
+
+            try
+            {
+                PluginContext.Operations.TryEditCurrentOrder(args =>
+                {
+                    if (args.order == null || args.order.Id != orderId)
+                    {
+                        _log($"Bonoos: [SUB] TryEditCurrentOrder — другой заказ " +
+                             $"(want={orderId}, got={args.order?.Id})");
+                        return;
+                    }
+
+                    ok = ApplySubscriptionComp(args.order, amountRub, args.os, previousAmount);
+                    if (ok)
+                    {
+                        var baseSum = args.order.FullSum > 0 ? args.order.FullSum : args.order.ResultSum;
+                        got = RoundToCurrency(args.os, amountRub > baseSum ? baseSum : amountRub);
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                _log($"Bonoos: [SUB] TryEditCurrentOrder failed: {ex.Message}");
+                return false;
+            }
+
+            appliedAmount = got;
+            return ok;
+        }
+
         public bool HasOurDiscount(IOrder order)
         {
             if (order?.Discounts == null)

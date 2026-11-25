@@ -152,6 +152,9 @@ namespace Bonoos.iikoFront.LoyaltyPlugin.Models
 
         public bool IsDiscountCard =>
             string.Equals(CardType, "DISCOUNT", StringComparison.OrdinalIgnoreCase);
+
+        public bool IsSubscriptionCard =>
+            string.Equals(CardType, "SUBSCRIPTION", StringComparison.OrdinalIgnoreCase);
     }
 
     // ────────────────────────────── Common request body (precheck, pay-by-bonus, cancel, confirm) ──
